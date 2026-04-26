@@ -1,0 +1,175 @@
+# Off-Heap Memory Allocator
+
+Lock-free slab allocator backed by `mmap`. Provides GC-isolated, off-heap memory for high-throughput, low-latency workloads.
+
+## Memory Model
+
+All allocations use `unix.Mmap` with `MAP_ANON | MAP_PRIVATE`. This memory:
+
+- Is **not tracked by Go's GC** — no heap scanning, no GOMEMLIMIT pressure
+- Lives outside the Go heap — accessible via `unsafe.Pointer` without GC interference
+- Is **manually managed** — caller controls lifecycle via `Pool.Reset()` or `Arena.Free()`
+
+## Pool
+
+`Pool` is a lock-free slab allocator. Memory is pre-allocated in slabs; small allocations are served from existing slabs using CAS, avoiding per-allocation syscalls.
+
+### Allocation Sizes
+
+| Size | Path |
+|------|------|
+| `size == 0` | Returns `(nil, ErrInvalidSize)` |
+| `size > SlabSize` | Direct mmap — tracked in `large` list for Reset cleanup |
+| `size <= SlabSize` | Slab allocation — served from hot slab or slow-path scan |
+
+### Configuration
+
+```go
+cfg := memory.AllocatorConfig{
+    PoolSize:     64 * 1024 * 1024, // Hard limit on mmap'd bytes
+    SlabSize:     1024 * 1024,       // 1MB slabs (default)
+    SlabCount:    16,                 // Pre-allocated slab descriptors
+    Prealloc:     false,             // Eagerly allocate slabs at creation
+    UseHugePages: false,             // Use MAP_HUGETLB (Linux, requires root)
+}
+pool, err := memory.NewPool(cfg)
+```
+
+### Prealloc
+
+When `Prealloc: true`, `NewPool` eagerly allocates `SlabCount` slabs immediately:
+
+- Validates `SlabCount * SlabSize <= PoolSize` before allocation
+- On failure, all successfully allocated slabs aremunmap'd and `reserved` is rolled back
+- Sets `cursor = 0` so first slab is hot immediately
+
+### UseHugePages
+
+When `UseHugePages: true` (Linux only):
+
+- Attempts `mmap` with `MAP_HUGETLB` flag (2MB huge pages on x86_64)
+- **Requires `SlabSize` to be a multiple of `HugepageSize` (2MB)** — validated at pool creation
+- On failure (no root, no hugepages available), silently falls back to regular `mmap`
+- Silent fallback is intentional — guarantees pool creation succeeds even without hugepage support
+
+### PoolSize Enforcement
+
+`PoolSize` is a **hard limit** on bytes mmap'd via atomic `reserve()`. When exhausted, `Allocate` returns `ErrPoolExhausted` even if existing slabs have free space.
+
+**Note:** `PoolSize` tracks mmap'd bytes (`reserved`), not allocated bytes.
+
+## Arena
+
+Bump-pointer arena for short-lived allocations. Single-threaded only.
+
+```go
+arena, err := memory.NewArena(1024 * 1024) // 1MB arena
+ptr, err := arena.Alloc(256)
+remaining := arena.Remaining()
+arena.Reset()  // Reset offset, reuse backing (mmap preserved)
+arena.Free()   // Destructor — invalidates arena (mmap released)
+```
+
+## Memory Contract
+
+### Caller Responsibilities
+
+1. **No concurrent `Reset` + `Allocate`**
+
+   Calling `Reset()` while other goroutines hold allocations from the pool is **undefined behavior** (SIGSEGV or silent corruption).
+
+   **Contract:** Caller must ensure quiescence — no in-flight `Allocate` calls — before calling `Reset()`.
+
+2. **Pool lifetime > all allocations**
+
+   Allocations remain valid until `Pool.Reset()`. Calling `Reset` invalidates all outstanding allocations.
+
+3. **Arena single-threaded**
+
+   `Arena.Alloc` is a single-producer bump allocator. Concurrent `Alloc` calls on the same arena cause overlapping allocations. `Arena.Reset()` is also single-producer only.
+
+### Reset Safety
+
+`Reset()` uses a **generation counter** as best-effort protection:
+
+- Increments `generation` before unmapping
+- Allocators check generation before and after CAS
+- If generation changed, allocation is retried rather than returning a pointer to unmapped memory
+
+**Generation checks are best-effort, not a true RCU barrier.** The only guarantee is external quiescence. Violating the "no concurrent Reset+Allocate" contract can result in segfault.
+
+### Error Semantics
+
+| Error | Meaning |
+|-------|---------|
+| `ErrInvalidSize` | `size == 0` |
+| `ErrPoolExhausted` | `PoolSize` limit reached, or `Prealloc` exceeds `PoolSize` |
+| `ErrMmapFailed` | OS `mmap` call failed (OOM, system limit, or hugepage alignment violation) |
+| `ErrArenaExhausted` | Arena has insufficient space |
+
+## Stats Semantics
+
+```go
+type PoolStats struct {
+    Reserved  uint64 // Total bytes mmap'd (pool limit ceiling)
+    Allocated uint64 // Bytes handed out to callers
+    Committed uint64 // Bytes mmap'd for large (>SlabSize) allocations
+    PeakUsage uint64 // Peak single large allocation size
+    SlabCount int32  // Number of slabs
+    SlabSize  uint64 // Per-slab size
+    Align     uint64 // Alignment (always 8)
+}
+```
+
+- `Reserved == Allocated + free space in slabs + fragmentation`
+- `Committed ⊆ Reserved` (large allocations only)
+- `Allocated` may slightly **overcount** during heavy Reset churn — conservative is safer for monitoring than undercounting
+
+## Alignment
+
+All allocations are **8-byte aligned** for SIMD/ARM compatibility.
+
+## Watchdog
+
+Process-wide memory pressure monitor. Monitors **Go heap metrics** (`HeapInuse`), not system RSS.
+
+```go
+stop := memory.RegisterMemoryPressureCallback(
+    512*1024*1024, // 512MB threshold
+    func(stats memory.MemStats) {
+        log.Printf("heap pressure: %d bytes", stats.Used)
+    },
+)
+defer stop()
+```
+
+For system-level memory monitoring, implement a custom callback using `unix.Sysinfo`.
+
+## Performance Characteristics
+
+| Operation | Complexity | Locks |
+|-----------|------------|-------|
+| Hot path (slab has space) | O(1), lock-free CAS | None |
+| Slow path (scan slabs) | O(n slabs) | None |
+| New slab creation | O(1) + mmap | None |
+| Large allocation | O(1) + mmap | `largeMu` (brief) |
+| Reset | O(n slabs) munmap | `largeMu` (brief) |
+
+The hot path has no locks and typically hits the first slab. Slow path adds O(n) where n = number of slabs.
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `PoolSize` | uint64 | 64MB | Hard limit on mmap'd bytes |
+| `SlabSize` | uint64 | 1MB | Size of each slab |
+| `SlabCount` | int | 16 | Initial slab descriptor capacity |
+| `Prealloc` | bool | false | Eagerly allocate `SlabCount` slabs at creation |
+| `UseHugePages` | bool | false | Use `MAP_HUGETLB` (Linux, requires 2MB-aligned `SlabSize`) |
+
+## What This Is NOT
+
+- **Not GC-safe** — memory is not zeroed on alloc/reset; caller manages contents
+- **Not thread-safe for `Arena`** — single-producer bump allocator, concurrent use causes corruption
+- **Not a substitute for `sync.Pool`** — designed for explicit lifecycle control, not automatic GC integration
+- **Not a general-purpose allocator** — tuned for slab workloads; large allocations bypass slabs
