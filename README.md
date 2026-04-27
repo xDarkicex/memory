@@ -249,6 +249,18 @@ Since all memory is `mmap`/`madvise`-backed, RSS behavior after `Reset()` varies
 
 On macOS, `top`/`htop` may show higher resident memory after `Reset()` due to lazy page reclamation. This is **cosmetic** — the OS reclaims pages under pressure. Go runtime metrics (`MemStats`) will always report zero heap growth.
 
+## Examples
+
+See [`examples/`](examples/) for full runnable demonstrations:
+
+| Example | Description | Arena Advantage |
+|---|---|---|
+| [parser-scratch](examples/parser-scratch/) | JSON tokenizer with scratch buffer | 0 allocs vs 1 heap alloc per parse |
+| [request-pool](examples/request-pool/) | Per-request TLV message builder | 0 allocs, bulk `Reset()` vs per-buffer `sync.Pool` |
+| [vector-storage](examples/vector-storage/) | float32 embeddings off-heap | 0 allocs, GC doesn't scan 6GB+ of vectors |
+
+Each example includes a `main_test.go` with benchmarks comparing arena vs standard approaches.
+
 ## What This Is NOT
 
 - **Not GC-safe** — memory is not zeroed on alloc/reset; caller manages contents
