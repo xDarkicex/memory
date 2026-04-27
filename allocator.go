@@ -555,8 +555,8 @@ func (a *Arena) Alloc(size uint64) (unsafe.Pointer, error) {
 		}
 
 		if a.offset.CompareAndSwap(oldOffset, newOffset+size) {
-			ptr := uintptr(unsafe.Pointer(&a.data[0])) + uintptr(newOffset)
-			return unsafe.Pointer(ptr), nil
+			ptr := unsafe.Add(unsafe.Pointer(&a.data[0]), uintptr(newOffset))
+			return ptr, nil
 		}
 		// CAS failed: retry with fresh offset
 	}

@@ -32,8 +32,8 @@ func Hint(h MemoryHint, ptr unsafe.Pointer, length int) {
 		advice = unix.MADV_NORMAL
 	}
 	pageSize := uintptr(PageSize)
-	pageBase := (uintptr(ptr) / pageSize) * pageSize
-	offset := uintptr(ptr) - pageBase
-	pageLen := (offset + uintptr(length) + pageSize - 1) &^ (pageSize - 1)
-	_ = unix.Madvise(unsafe.Slice((*byte)(unsafe.Pointer(pageBase)), pageLen), advice)
+	pageOffset := uintptr(ptr) % pageSize
+	pageBase := unsafe.Add(ptr, -int(pageOffset))
+	pageLen := (pageOffset + uintptr(length) + pageSize - 1) &^ (pageSize - 1)
+	_ = unix.Madvise(unsafe.Slice((*byte)(pageBase), pageLen), advice)
 }
