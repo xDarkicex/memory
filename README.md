@@ -118,7 +118,7 @@ arena.Free()                               // release mmap, invalidate
 | Concurrency | Multi-producer safe | Single-producer |
 | Allocation | Slab allocator (CAS) | Bump pointer (CAS) |
 | Free | Bulk `Reset()` | `Reset()` (reuse) or `Free()` (destroy) |
-| Large allocs | Yes (> SlabSize, separate mmap) | No (bounded by arena size) |
+| Large allocs | Yes (over SlabSize, separate mmap) | No (bounded by arena size) |
 | Use case | Shared request pools, caches, vector stores | Frame scratch, per-request temp data |
 
 ## Safety
