@@ -30,7 +30,12 @@ func benchmarkAllocBatch(b *testing.B, pool *Pool, allocSize uint64, batchSize i
 			}
 			sink = data[0]
 		}
-		// Reclaim pool space for next batch
+		// Report internal fragmentation before reclaim
+		s := pool.Stats()
+		if s.Reserved > 0 {
+			b.ReportMetric(float64(s.Allocated)/float64(s.Reserved)*100, "util-%")
+			b.ReportMetric(float64(s.Reserved-s.Allocated), "waste-B/op")
+		}
 		pool.Reset()
 	}
 	_ = sink
@@ -117,9 +122,12 @@ func BenchmarkPoolResetDuration(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pool.Reset()
-		// Re-allocate to keep slabs mapped for next iteration
 		for j := 0; j < 64; j++ {
 			_, _ = pool.Allocate(256 * 1024)
+		}
+		s := pool.Stats()
+		if s.Reserved > 0 {
+			b.ReportMetric(float64(s.Allocated)/float64(s.Reserved)*100, "util-%")
 		}
 	}
 }
@@ -152,9 +160,12 @@ func BenchmarkPoolResetCost(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				pool.Reset()
-				// Re-fill for next iteration
 				for j := 0; j < slabCount; j++ {
 					_, _ = pool.Allocate(256 * 1024)
+				}
+				s := pool.Stats()
+				if s.Reserved > 0 {
+					b.ReportMetric(float64(s.Allocated)/float64(s.Reserved)*100, "util-%")
 				}
 			}
 			pool.Reset()
@@ -185,16 +196,17 @@ func BenchmarkArenaAllocThroughput(b *testing.B) {
 		if i+batch > b.N {
 			batch = b.N - i
 		}
-		// Arena.Reset() is O(1) — just resets offset, doesn't unmap
 		arena.Reset()
 		for j := 0; j < batch; j++ {
-			// allocSize >= 1 is guaranteed; dereferencing ptr is safe
 			ptr, err := arena.Alloc(allocSize)
 			if err != nil {
 				b.Fatal(err)
 			}
 			sink = *(*byte)(ptr)
 		}
+		rem := arena.Remaining()
+		used := float64(uint64(len(arena.data))-rem) / float64(len(arena.data)) * 100
+		b.ReportMetric(used, "util-%")
 	}
 	_ = sink
 }

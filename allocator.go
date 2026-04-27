@@ -84,9 +84,11 @@ type Pool struct {
 	slabStructs []slab  // Pre-allocated slab metadata, never reallocated
 	// Hot slab cursor - atomic index for O(1) hot path lookup
 	cursor atomic.Int64
-	// Large allocations tracking (protected by dedicated mutex)
-	largeMu sync.Mutex
-	large   []*slab // Large allocations require explicit tracking for Reset/Free
+	// Large allocations tracking: same zero-alloc pattern as slabs.
+	largeLen     atomic.Int64
+	largeBuf     []*slab
+	largeStructs []slab
+	largeMu      sync.Mutex // Serializes large allocation tracking
 	// Serializes slab list expansion to prevent data race on shared slabBuf
 	growMu sync.Mutex
 	// Generation counter for Reset safety
@@ -140,8 +142,10 @@ func NewPool(cfg AllocatorConfig) (*Pool, error) {
 		cfg:         cfg,
 		align:       8,
 		alignMask:   7,
-		slabBuf:     make([]*slab, maxSlabs),
-		slabStructs: make([]slab, maxSlabs),
+		slabBuf:       make([]*slab, maxSlabs),
+		slabStructs:   make([]slab, maxSlabs),
+		largeBuf:      make([]*slab, maxSlabs),
+		largeStructs:  make([]slab, maxSlabs),
 	}
 
 	// Pre-allocate initial slabs if configured
@@ -408,15 +412,22 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 	p.committed.Add(size)
 	p.allocated.Add(size)
 
-	// Track large allocation for Reset/Free
-	newSlab := &slab{
-		data:  data,
-		mmapd: true,
-		used:  atomic.Uint64{}, // Explicitly initialize for consistency
-	}
-
+	// Zero-alloc: reuse pre-allocated large slab struct.
 	p.largeMu.Lock()
-	p.large = append(p.large, newSlab)
+	idx := int(p.largeLen.Load())
+	if idx >= len(p.largeStructs) {
+		p.largeMu.Unlock()
+		unix.Munmap(data)
+		p.reserved.Add(-size)
+		p.allocated.Add(-size)
+		p.committed.Add(-size)
+		return nil, ErrPoolExhausted
+	}
+	s := &p.largeStructs[idx]
+	s.data = data
+	s.mmapd = true
+	p.largeBuf[idx] = s
+	p.largeLen.Store(int64(idx + 1))
 	p.largeMu.Unlock()
 
 	return data, nil
@@ -442,14 +453,14 @@ func (p *Pool) Reset() {
 	}
 
 	// Unmap large allocations
-	p.largeMu.Lock()
-	for _, s := range p.large {
-		if s != nil && s.mmapd && len(s.data) > 0 {
+	largeLen := p.largeLen.Load()
+	for i := int64(0); i < largeLen; i++ {
+		if s := p.largeBuf[i]; s != nil && s.mmapd && len(s.data) > 0 {
 			unix.Munmap(s.data)
 		}
+		p.largeBuf[i] = nil
 	}
-	p.large = nil
-	p.largeMu.Unlock()
+	p.largeLen.Store(0)
 
 	// Reset state
 	p.reserved.Store(0)
