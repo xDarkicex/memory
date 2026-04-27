@@ -5,6 +5,8 @@ package memory
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"sync"
@@ -26,17 +28,22 @@ var (
 // PageSize is the actual system page size obtained via OS syscall.
 var PageSize = os.Getpagesize()
 
-// HugepageSize is the standard huge page size on x86_64 (2MB).
+// HugepageSize is the huge page size on Linux (detected at init from /proc/meminfo).
 // Used for validation when UseHugePages is enabled.
-const HugepageSize uint64 = 2 * 1024 * 1024
+// This value is Linux-specific; Darwin has no working huge page support
+// and UseHugePages is ignored there.
+// NOTE: Other Linux architectures (e.g. arm64) may use different huge page sizes.
+var HugepageSize uint64 = 2 * 1024 * 1024
 
 // AllocatorConfig holds memory allocator settings.
 type AllocatorConfig struct {
 	// PoolSize is the maximum pool size in bytes (hard limit on mmap'd memory).
 	PoolSize uint64
-	// UseHugePages enables transparent huge pages (requires root/hugepage allocation).
+	// UseHugePages attempts explicit huge page allocation via MAP_HUGETLB (Linux only).
+	// Falls back to regular mmap if huge pages are unavailable or not configured.
+	// On Darwin: UseHugePages is silently ignored — macOS has no working huge page
+	// support for user code; regular mmap is always used.
 	// When enabled, SlabSize should be a multiple of HugepageSize for best results.
-	// On failure to allocate huge pages, falls back to regular mmap silently.
 	UseHugePages bool
 	// Prealloc enables pre-allocation of memory pools at creation time.
 	Prealloc bool
@@ -69,13 +76,19 @@ type Pool struct {
 	committed atomic.Uint64 // Bytes committed via mmap
 	peak      atomic.Uint64 // Peak single allocation
 
-	// Slab management: atomic pointer to immutable slice of slab pointers
-	slabs atomic.Pointer[[]*slab]
+	// Slab management: slabLen tracks the active count of slabs.
+	// Readers slice slabBuf[:slabLen.Load()] — zero alloc.
+	// slabBuf and slabStructs are pre-allocated once, never resized.
+	slabLen     atomic.Int64
+	slabBuf     []*slab // Pre-allocated backing array, capacity = maxSlabs
+	slabStructs []slab  // Pre-allocated slab metadata, never reallocated
 	// Hot slab cursor - atomic index for O(1) hot path lookup
 	cursor atomic.Int64
 	// Large allocations tracking (protected by dedicated mutex)
 	largeMu sync.Mutex
 	large   []*slab // Large allocations require explicit tracking for Reset/Free
+	// Serializes slab list expansion to prevent data race on shared slabBuf
+	growMu sync.Mutex
 	// Generation counter for Reset safety
 	generation atomic.Uint64
 	// Slab size and alignment
@@ -104,15 +117,31 @@ func NewPool(cfg AllocatorConfig) (*Pool, error) {
 		cfg.SlabSize = 1024 * 1024 // 1MB slabs
 	}
 
-	// Validate huge page alignment when requested
-	if cfg.UseHugePages && cfg.SlabSize%HugepageSize != 0 {
-		return nil, errors.New("SlabSize must be a multiple of HugepageSize (2MB) when UseHugePages is enabled")
+	// Validate huge page alignment when requested.
+	// UseHugePages requires HugepageSize > 0; silently ignored on platforms
+	// without huge page support (e.g. Darwin where HugepageSize == 0).
+	if cfg.UseHugePages {
+		if HugepageSize == 0 {
+			// Huge pages not supported on this platform; silently disable
+			cfg.UseHugePages = false
+		} else if cfg.SlabSize%HugepageSize != 0 {
+			return nil, fmt.Errorf("SlabSize must be a multiple of HugepageSize (%d bytes) when UseHugePages is enabled", HugepageSize)
+		}
+	}
+
+	// Pre-allocate slabBuf backing array — single heap alloc, never resized.
+	// maxSlabs = ceil(PoolSize / SlabSize), clamped to at least SlabCount.
+	maxSlabs := int((cfg.PoolSize + cfg.SlabSize - 1) / cfg.SlabSize)
+	if maxSlabs < cfg.SlabCount {
+		maxSlabs = cfg.SlabCount
 	}
 
 	p := &Pool{
-		cfg:       cfg,
-		align:     8,
-		alignMask: 7,
+		cfg:         cfg,
+		align:       8,
+		alignMask:   7,
+		slabBuf:     make([]*slab, maxSlabs),
+		slabStructs: make([]slab, maxSlabs),
 	}
 
 	// Pre-allocate initial slabs if configured
@@ -122,62 +151,40 @@ func NewPool(cfg AllocatorConfig) (*Pool, error) {
 			return nil, ErrPoolExhausted
 		}
 
-		initialSlabs := make([]*slab, 0, cfg.SlabCount)
 		for i := 0; i < cfg.SlabCount; i++ {
 			data, err := p.mmapSlab(cfg.SlabSize)
 			if err != nil {
-				// On failure, clean up what we allocated and return error
-				// Rollback reserved counter for each successful slab
+				// Rollback: munmap already-allocated slabs
 				for j := 0; j < i; j++ {
-					if s := initialSlabs[j]; s != nil && s.mmapd {
+					if s := p.slabBuf[j]; s != nil && s.mmapd {
 						unix.Munmap(s.data)
 						p.reserved.Add(-cfg.SlabSize)
 					}
 				}
 				return nil, ErrMmapFailed
 			}
-			newSlab := &slab{
-				data:  data,
-				mmapd: true,
-			}
-			newSlab.used.Store(0)
+			s := &p.slabStructs[i]
+			s.data = data
+			s.mmapd = true
+			s.used.Store(0)
 			p.reserved.Add(cfg.SlabSize)
-			initialSlabs = append(initialSlabs, newSlab)
+			p.slabBuf[i] = s
 		}
-		p.slabs.Store(&initialSlabs)
-		p.cursor.Store(0) // First slab is hot
+		p.slabLen.Store(int64(cfg.SlabCount))
+		p.cursor.Store(0)
 	} else {
-		initialSlabs := make([]*slab, 0, cfg.SlabCount)
-		p.slabs.Store(&initialSlabs)
+		p.slabLen.Store(0)
 		p.cursor.Store(-1)
 	}
 
 	return p, nil
 }
 
-// MAP_HUGETLB is used for huge page mappings on Linux.
-// Requires root privileges or sufficient hugepage allocation.
-// This is a runtime constant since unix.MAP_HUGETLB is not available on all platforms.
-const MAP_HUGETLB = 0x40000
-
-// mmapSlab creates a single mmap-backed slab.
-// If UseHugePages is enabled, uses MAP_HUGETLB (requires root or sufficient privileges on Linux).
-// When huge pages are requested but unavailable, falls back to regular mmap silently.
-func (p *Pool) mmapSlab(slabSize uint64) ([]byte, error) {
-	if p.cfg.UseHugePages {
-		data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE,
-			unix.MAP_ANON|unix.MAP_PRIVATE|MAP_HUGETLB)
-		if err != nil {
-			// MAP_HUGETLB requires root or hugepage support; fall back to regular mmap
-			return p.mmapSlabRegular(slabSize)
-		}
-		return data, nil
+// mmapSlabBase is the base mmap implementation shared across platforms.
+func (p *Pool) mmapSlabBase(slabSize uint64) ([]byte, error) {
+	if slabSize > math.MaxInt {
+		return nil, fmt.Errorf("slab size %d exceeds addressable int range", slabSize)
 	}
-	return p.mmapSlabRegular(slabSize)
-}
-
-// mmapSlabRegular creates a regular (non-hugepage) mmap-backed slab.
-func (p *Pool) mmapSlabRegular(slabSize uint64) ([]byte, error) {
 	data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
 	if err != nil {
 		return nil, err
@@ -190,7 +197,9 @@ func (p *Pool) mmapSlabRegular(slabSize uint64) ([]byte, error) {
 func (p *Pool) reserve(size uint64) bool {
 	for {
 		reserved := p.reserved.Load()
-		if reserved+size > p.cfg.PoolSize {
+		// Check overflow: if size > PoolSize, or reserved > PoolSize - size,
+		// the reservation would exceed the pool limit.
+		if size > p.cfg.PoolSize || reserved > p.cfg.PoolSize-size {
 			return false
 		}
 		if p.reserved.CompareAndSwap(reserved, reserved+size) {
@@ -216,8 +225,7 @@ func (p *Pool) Allocate(size uint64) ([]byte, error) {
 	// Hot path: try hot slab first (no reservation needed, slabs already mmap'd)
 	for {
 		gen := p.generation.Load()
-		slabsPtr := p.slabs.Load()
-		slabs := *slabsPtr
+		slabs := p.slabBuf[:p.slabLen.Load()]
 
 		cursor := p.cursor.Load()
 		if cursor < 0 || cursor >= int64(len(slabs)) {
@@ -238,22 +246,16 @@ func (p *Pool) Allocate(size uint64) ([]byte, error) {
 			break // Hot slab full or overflow
 		}
 
-		// Check generation BEFORE mutating slab state (SC guarantees visibility)
-		if p.generation.Load() != gen {
-			continue // Reset in progress, retry from slow path
-		}
-
 		// CAS to claim space in hot slab
 		if s.used.CompareAndSwap(used, newUsed) {
-			// Record allocation first - memory IS allocated regardless of gen check.
-			// Conservative: Stats().Allocated may overcount during Reset churn,
-			// but never undercount (which would be dangerous for monitoring).
+			// Record allocation before gen check: memory is consumed regardless.
+			// Conservative overcount is safer for monitoring than undercount.
 			p.allocated.Add(size)
 
 			// Post-CAS generation check: if Reset happened during CAS,
-			// retry without returning to avoid pointer into unmapped memory.
+			// retry to avoid returning a pointer into memory being unmapped.
 			if p.generation.Load() != gen {
-				continue // Retry from slow path; allocated already counted
+				continue // Retry from slow path
 			}
 			return s.data[alignedUsed:newUsed], nil
 		}
@@ -270,8 +272,7 @@ func (p *Pool) allocateSlowPath(size uint64) ([]byte, error) {
 retry:
 	for {
 		gen := p.generation.Load()
-		slabsPtr := p.slabs.Load()
-		slabs := *slabsPtr
+		slabs := p.slabBuf[:p.slabLen.Load()]
 
 		// Scan all slabs for space
 		for i, s := range slabs {
@@ -288,26 +289,18 @@ retry:
 					break
 				}
 
-				// Check generation BEFORE mutating slab state.
-				// Go's atomic operations are sequentially consistent (SC),
-				// guaranteeing the generation increment in Reset() is visible
-				// before any subsequent load of slab pointers.
-				if p.generation.Load() != gen {
-					continue retry
-				}
+				// Pre-check is speculative only: Reset can still fire between
+				// this load and the CAS. The post-CAS check below is the
+				// load-bearing guarantee.
 
 				if s.used.CompareAndSwap(used, newUsed) {
-					// Record allocation first - memory IS allocated regardless of gen check.
-					// This is conservative: Stats().Allocated may slightly overcount during
-					// retries, but never undercounts (which would be dangerous for monitoring).
+					// Record allocation before gen check: memory is consumed regardless.
+					// Conservative overcount is safer for monitoring than undercount.
 					p.allocated.Add(size)
 
-					// Generation check after CAS for symmetry.
-					// If Reset happened during CAS, retry without returning
-					// to avoid returning slice into memory being unmapped.
+					// Post-CAS generation check: if Reset happened during CAS,
+					// retry to avoid returning a pointer into memory being unmapped.
 					if p.generation.Load() != gen {
-						// allocated.Add already recorded; on retry this slab's space
-						// will appear occupied (which is fine - conservative accounting)
 						continue retry
 					}
 					// Cursor only moves forward to avoid thrashing
@@ -326,55 +319,64 @@ retry:
 			}
 		}
 
-		// No space - reserve and add new slab
+		// No space — serialize slab list expansion to prevent
+		// data race on shared slabBuf backing array.
+		p.growMu.Lock()
+
+		// Re-check after acquiring lock: another goroutine may have
+		// already expanded the slab list while we were waiting.
+		recheckSlabs := p.slabBuf[:p.slabLen.Load()]
+		if len(recheckSlabs) > len(slabs) {
+			p.growMu.Unlock()
+			continue retry
+		}
+
 		slabSize := p.cfg.SlabSize
 		if !p.reserve(slabSize) {
+			p.growMu.Unlock()
 			return nil, ErrPoolExhausted
 		}
 
 		data, err := p.mmapSlab(slabSize)
 		if err != nil {
 			p.reserved.Add(-slabSize) // Rollback reservation
+			p.growMu.Unlock()
 			return nil, ErrMmapFailed // Distinguish OS failure from pool limit
 		}
 
-		newSlab := &slab{
-			data:  data,
-			mmapd: true,
-		}
+		newIdx := len(recheckSlabs)
 
-		// Set used BEFORE publishing slab to avoid race window
-		alignedUsed := uint64(0)
-		newSlab.used.Store(alignedUsed + size)
-
-		// Atomic snapshot swap: allocate new slice, copy, append
-		newSlabs := make([]*slab, len(slabs)+1)
-		copy(newSlabs, slabs)
-		newSlabs[len(slabs)] = newSlab
-
-		// Publish using heap pointer - slabsPtr is the address of the heap-allocated slice header
-		if !p.slabs.CompareAndSwap(slabsPtr, &newSlabs) {
-			// CAS failed: another goroutine added a slab, retry
+		// Check capacity before extending — if slabBuf is full, pool is exhausted.
+		if newIdx >= cap(p.slabBuf) {
 			unix.Munmap(data)
-			p.reserved.Add(-slabSize) // Rollback reservation
-			continue retry
+			p.reserved.Add(-slabSize)
+			p.growMu.Unlock()
+			return nil, ErrPoolExhausted
 		}
+
+		// Zero-alloc: reuse pre-allocated slab struct and slabBuf slot.
+		s := &p.slabStructs[newIdx]
+		s.data = data
+		s.mmapd = true
+		s.used.Store(size)
+		p.slabBuf[newIdx] = s
+		p.slabLen.Store(int64(newIdx + 1))
+		p.growMu.Unlock()
 
 		p.allocated.Add(size)
 
 		// Update cursor to new slab using monotonic CAS
-		newIdx := int64(len(slabs))
 		for {
 			oldCursor := p.cursor.Load()
-			if newIdx <= oldCursor {
+			if int64(newIdx) <= oldCursor {
 				break
 			}
-			if p.cursor.CompareAndSwap(oldCursor, newIdx) {
+			if p.cursor.CompareAndSwap(oldCursor, int64(newIdx)) {
 				break
 			}
 		}
 
-		return data[alignedUsed : alignedUsed+size], nil
+		return data[:size], nil
 	}
 }
 
@@ -386,7 +388,13 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 		return nil, ErrPoolExhausted
 	}
 
-	// Update peak tracking
+	data, err := p.mmapSlab(size)
+	if err != nil {
+		p.reserved.Add(-size)
+		return nil, ErrMmapFailed
+	}
+
+	// Peak update only after mmap confirmed successful
 	for {
 		oldPeak := p.peak.Load()
 		if size <= oldPeak {
@@ -395,12 +403,6 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 		if p.peak.CompareAndSwap(oldPeak, size) {
 			break
 		}
-	}
-
-	data, err := p.mmapSlab(size)
-	if err != nil {
-		p.reserved.Add(-size) // Rollback reservation
-		return nil, ErrMmapFailed
 	}
 
 	p.committed.Add(size)
@@ -424,17 +426,19 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 // WARNING: All outstanding allocations become invalid.
 // Caller must ensure quiescence: no concurrent Allocate calls should be in flight.
 // Generation counter catches stragglers still in their CAS retry loop.
+// Note: Munmap errors are intentionally ignored — mappings are released
+// on best-effort basis and will be reclaimed by the OS on process exit.
 func (p *Pool) Reset() {
 	// Increment generation - allocators will retry on old slabs
 	p.generation.Add(1)
 
-	// Unmap all slabs
-	slabsPtr := p.slabs.Load()
-	slabs := *slabsPtr
-	for _, s := range slabs {
-		if s != nil && s.mmapd && len(s.data) > 0 {
+	// Unmap all slabs and nil out entries for GC
+	slabs := p.slabBuf[:p.slabLen.Load()]
+	for i := range slabs {
+		if s := slabs[i]; s != nil && s.mmapd && len(s.data) > 0 {
 			unix.Munmap(s.data)
 		}
+		p.slabBuf[i] = nil
 	}
 
 	// Unmap large allocations
@@ -454,23 +458,20 @@ func (p *Pool) Reset() {
 	p.peak.Store(0) // Clear peak tracking
 	p.cursor.Store(-1)
 
-	// Reinitialize empty slabs array
-	empty := make([]*slab, 0, p.cfg.SlabCount)
-	p.slabs.Store(&empty)
+	p.slabLen.Store(0)
 }
 
 // Stats returns current memory statistics.
 // Safe for concurrent access - takes atomic snapshot.
 func (p *Pool) Stats() PoolStats {
-	slabsPtr := p.slabs.Load()
-	slabs := *slabsPtr
+	slabLen := p.slabLen.Load()
 
 	return PoolStats{
 		Reserved:  p.reserved.Load(),
 		Allocated: p.allocated.Load(),
 		Committed: p.committed.Load(),
 		PeakUsage: p.peak.Load(),
-		SlabCount: int32(len(slabs)),
+		SlabCount: int32(slabLen),
 		SlabSize:  p.cfg.SlabSize,
 		Align:     p.align,
 	}
@@ -487,8 +488,9 @@ type PoolStats struct {
 	Align      uint64
 }
 
-// Arena provides a thread-local memory arena with lock-free bump allocation.
-// Uses off-heap mmap for complete GC isolation.
+// Arena provides an off-heap memory arena with concurrent-safe bump allocation.
+// Uses a CAS loop for lock-free allocation — safe for multiple concurrent producers.
+// Single-producer use is the recommended usage pattern for best performance.
 type Arena struct {
 	offset atomic.Uint64
 	data   []byte
@@ -498,6 +500,9 @@ type Arena struct {
 
 // NewArena creates a new off-heap memory arena.
 func NewArena(size uint64) (*Arena, error) {
+	if size > math.MaxInt {
+		return nil, fmt.Errorf("arena size %d exceeds addressable int range", size)
+	}
 	data, err := unix.Mmap(-1, 0, int(size), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
 	if err != nil {
 		return nil, ErrMmapFailed
@@ -583,25 +588,7 @@ const (
 	HintDontNeed
 )
 
-// Hint passes hints to the OS memory manager via direct unix.Madvise syscall.
-func Hint(h MemoryHint, ptr unsafe.Pointer, length int) {
-	var advice int
-	switch h {
-	case HintWillNeed:
-		advice = unix.MADV_WILLNEED
-	case HintDontNeed:
-		advice = unix.MADV_DONTNEED
-	default:
-		advice = unix.MADV_NORMAL
-	}
-	pageSize := uintptr(PageSize)
-	pageBase := (uintptr(ptr) / pageSize) * pageSize
-	// Account for ptr offset within page when calculating length
-	offset := uintptr(ptr) - pageBase
-	pageLen := (offset + uintptr(length) + pageSize - 1) &^ (pageSize - 1)
-
-	_ = unix.Madvise(unsafe.Slice((*byte)(unsafe.Pointer(pageBase)), pageLen), advice)
-}
+// Hint is defined in memory_linux.go and memory_darwin.go based on platform.
 
 // GCStats holds garbage collector statistics.
 type GCStats struct {
@@ -667,17 +654,18 @@ type MemStats struct {
 	Buffers   uint64
 }
 
-// ReadMemStats reads system memory statistics.
-// Returns Go heap metrics - for true system memory use unix.Sysinfo on Linux.
+// ReadMemStats reads Go heap memory statistics.
+// Note: this reports Go runtime heap metrics, not physical RAM.
+// For off-heap mmap'd memory managed by this allocator, look at PoolStats.
 func ReadMemStats() MemStats {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
 	return MemStats{
-		Total:     m.HeapSys,
-		Available: m.HeapIdle,
-		Used:      m.HeapInuse,
-		Free:      m.HeapIdle,
+		Total:     m.HeapSys,     // Total memory obtained from OS
+		Available: m.HeapSys,    // Total available (same as Total for heap)
+		Used:      m.HeapInuse,  // In-use by runtime allocator
+		Free:      m.HeapIdle,   // Memory not used by runtime
 		SwapTotal: 0,
 		SwapUsed:  0,
 		Cached:    m.HeapReleased,
