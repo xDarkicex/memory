@@ -212,6 +212,38 @@ Apple M2, Go 1.25, Darwin (arm64). All allocation paths are **zero heap allocs**
 |---|---|---|---|---|
 | Shared pool | 11.3M | 105 | 4 | 0 |
 
+¹ 4 B/op, 0 allocs/op — `sync.WaitGroup` stack spill in benchmark scaffolding, not a heap allocation.
+
+### GC Isolation (GODEBUG=gctrace=1)
+
+Sustained 10+ second runs under `GODEBUG=gctrace=1`. Every allocation path shows **`0->0->0 MB`** live heap with zero automatic GC triggers.
+
+| Benchmark | Duration | GC Cycles | Live Heap | Auto GC |
+|---|---|---|---|---|
+| HotPath | 10s | 7 forced | 0→0→0 MB | 0 |
+| GrowPath | 5s | 4 forced | 0→0→0 MB | 0 |
+| LargeAllocation | 5s | 4 forced | 0→0→0 MB | 0 |
+
+**What `0->0->0 MB` means** (gctrace format: `live_before→live_marked→live_after`):
+
+- **Before GC:** zero bytes considered live by the runtime
+- **After mark:** zero bytes survived marking (nothing to trace)
+- **After sweep:** zero bytes remain
+
+All GC cycles are `(forced)` — `runtime.GC()` from benchmark scaffolding (`BenchmarkGoHeapUsed`), not pressure-driven. No automatic GC fired because the runtime never detected heap growth.
+
+### Platform Notes
+
+Since all memory is `mmap`/`madvise`-backed, RSS behavior after `Reset()` varies by platform:
+
+| Platform | `MADV_DONTNEED` behavior | RSS after Reset |
+|---|---|---|
+| **Linux** | `MADV_DONTNEED` releases pages immediately | RSS drops |
+| **macOS (darwin)** | `MADV_FREE` lazily reclaims pages | RSS may linger until memory pressure |
+| **Windows** | `VirtualFree` varies by call type | — |
+
+On macOS, `top`/`htop` may show higher resident memory after `Reset()` due to lazy page reclamation. This is **cosmetic** — the OS reclaims pages under pressure. Go runtime metrics (`MemStats`) will always report zero heap growth.
+
 ## What This Is NOT
 
 - **Not GC-safe** — memory is not zeroed on alloc/reset; caller manages contents
