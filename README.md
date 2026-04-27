@@ -167,6 +167,51 @@ The hot path has no locks and typically hits the first slab. Slow path adds O(n)
 | `Prealloc` | bool | false | Eagerly allocate `SlabCount` slabs at creation |
 | `UseHugePages` | bool | false | Use `MAP_HUGETLB` (Linux, requires 2MB-aligned `SlabSize`) |
 
+## Benchmarks
+
+Apple M2, Go 1.25, Darwin (arm64). All allocation paths are **zero heap allocs**.
+
+### Pool Allocate (64 bytes, hot path)
+
+| Benchmark | ops/sec | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| Hot path (prealloc) | 124M | 9.9 | 0 | 0 |
+| Hot path (lazy) | 121M | 10.0 | 0 | 0 |
+| Varied sizes (16–4096) | 100M | 12.0 | 0 | 0 |
+| Concurrent (per-goroutine) | 77M | 15.5 | 0 | 0 |
+
+### Pool vs Arena
+
+| Benchmark | ops/sec | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| Pool.Allocate (64B) | 128M | 9.5 | 0 | 0 |
+| Arena.Alloc (64B) | 157M | 7.7 | 0 | 0 |
+
+### Slow / Grow / Large paths
+
+| Benchmark | ops/sec | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| Slow path (scan slabs) | 3.7M | 333 | 0 | 0 |
+| Grow path (new slab) | 2.0M | 616 | 0 | 0 |
+| Large allocation (1MB) | 1.9M | 684 | 69¹ | 1¹ |
+
+¹ Large allocations (>SlabSize) use one heap-allocated slab descriptor for `large` list tracking. Rare path.
+
+### Reset cost
+
+| Slabs | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| 4 | 2,341 | 0 | 0 |
+| 16 | 9,696 | 0 | 0 |
+| 64 | 40,423 | 0 | 0 |
+| 256 | 179,396 | 12 | 0 |
+
+### Concurrent (shared pool, 8 goroutines)
+
+| Benchmark | ops/sec | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| Shared pool | 11.3M | 105 | 4 | 0 |
+
 ## What This Is NOT
 
 - **Not GC-safe** — memory is not zeroed on alloc/reset; caller manages contents
