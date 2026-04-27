@@ -1,6 +1,11 @@
 # Off-Heap Memory Allocator
 
-Lock-free slab allocator backed by `mmap`. Provides GC-isolated, off-heap memory for high-throughput, low-latency workloads.
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Odin's `arena.Allocator` for Go** — explicit, scoped, zero-GC, bulk-free.
+
+Lock-free slab allocator backed by `mmap`. Provides GC-isolated, off-heap memory for high-throughput, low-latency workloads. Modeled after [Odin's arena allocator](https://odin-lang.org/docs/overview/#allocators): allocate freely, free all at once with `Reset()`. Use it anywhere you'd use `mem.Arena` in Odin — frame scratch, request pools, parser temp — not where you'd use the default context allocator.
 
 ## Memory Model
 
