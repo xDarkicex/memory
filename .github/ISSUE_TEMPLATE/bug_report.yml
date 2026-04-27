@@ -1,0 +1,48 @@
+name: Bug report
+description: Something isn't working correctly
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: Describe the unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Minimal code or steps to reproduce the issue.
+      placeholder: |
+        cfg := memory.AllocatorConfig{...}
+        pool, _ := memory.NewPool(cfg)
+        // ...
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Go version
+      description: Output of `go version`.
+      placeholder: go1.25.7 darwin/arm64
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: OS / architecture
+      description: e.g. linux/amd64, darwin/arm64.
+      placeholder: darwin/arm64
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: |
+        Benchmark output, gctrace logs, or anything else that helps
+        diagnose the issue. Optional.
+    validations:
+      required: false

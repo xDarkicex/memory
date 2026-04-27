@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a change or addition
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve? What's missing today?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed change
+      description: What would the API or behavior change look like?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Why existing API is insufficient
+      description: Why can't this be done with the current API surface?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Tradeoffs and safety implications
+      description: |
+        Does this affect the memory model, Reset contract, concurrency
+        guarantees, or benchmark claims? Does it add API surface that
+        could be misused?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider? Why prefer this one?
+    validations:
+      required: false

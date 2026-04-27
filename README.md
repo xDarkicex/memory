@@ -305,6 +305,10 @@ A process-wide heap pressure monitor is available via
 - **Not a general-purpose allocator** — tuned for slab workloads; large allocations bypass slabs
 - **Not safe for use-after-Reset** — accessing an allocation after `Reset()` will segfault or corrupt data
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
