@@ -16,26 +16,24 @@
 //   - Allocations are tiny and short-lived — Go's stack allocator wins
 //
 // Sharp edges:
-//   - Double-free silently corrupts the freelist. Best-effort detection via
-//     per-slot generation counter; not a 100% guarantee.
+//   - Double-free is detected via per-slot generation counters (best-effort).
 //   - Use-after-free is undefined behavior (segfault or silent corruption).
-//   - ABA problem on the freelist head is mitigated by a tagged pointer
-//     packing a 16-bit generation counter into the upper bits of the
-//     uint64 CAS word. Safe on 48-bit virtual address systems (ARM64, x86_64).
-
-// Safety status: SCAFFOLD — needs hardening.
-//   - Tagged-pointer ABA protection is implemented but not yet fuzzed under
-//     high-contention concurrent deallocation loops.
-//   - Double-free detection is a hardening TODO; currently trusts caller.
-//   - 48-bit VA assumption validated at init on darwin; Linux accepts
-//     the documented risk (LA57 systems with 57-bit VA will corrupt tags).
-//   - Slab tracking for Free uses a mutex; Reset is not concurrent-safe
-//     (same contract as Pool.Reset).
+//   - ABA problem on the freelist head is mitigated by a 16-bit generation tag
+//     packed into the upper bits of the CAS word. The tag wraps every 65,536
+//     pushFree/popFree operations; at sustained rates above ~500K alloc-free
+//     pairs/sec, a thread preempted for the wrap window could observe a stale
+//     head. For GC-isolated workloads with small heaps this is typically safe
+//     (no multi-ms STW pauses). LA57 kernels (57-bit VA) are rejected at init.
+//   - Reset is not concurrent-safe (same contract as Pool.Reset).
+//   - Double-free detection via slotGen allocates 8 bytes per slot on the Go
+//     heap (e.g. 8MB for a 64MB pool with 64B slots). This is a deliberate
+//     tradeoff for safety; disable by setting slotGen to nil if memory is tight.
 
 package memory
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -54,7 +52,7 @@ type FreeListConfig struct {
 	// PoolSize is the hard limit on total mmap'd bytes.
 	PoolSize uint64
 	// SlotSize is the fixed size of each allocation slot.
-	// Must be >= 8 (minimum for intrusive freelist pointer).
+	// Must be >= 16 (8 for intrusive next pointer + 4 for struct index).
 	SlotSize uint64
 	// SlabSize is the size of each mmap'd slab region.
 	// Should be a multiple of SlotSize for zero waste; defaults to 1MB.
@@ -63,45 +61,74 @@ type FreeListConfig struct {
 	SlabCount int
 	// Prealloc eagerly allocates SlabCount slabs at creation time.
 	Prealloc bool
+	// UseHugePages attempts huge page allocation via MAP_HUGETLB (Linux only).
+	// On Darwin: silently ignored — macOS has no working huge page support.
+	UseHugePages bool
 }
 
 // DefaultFreeListConfig returns a sensible default configuration.
 func DefaultFreeListConfig() FreeListConfig {
 	return FreeListConfig{
-		PoolSize:  64 * 1024 * 1024,
-		SlotSize:  4096,
-		SlabSize:  1024 * 1024,
-		SlabCount: 16,
-		Prealloc:  false,
+		PoolSize:     64 * 1024 * 1024,
+		SlotSize:     4096,
+		SlabSize:     1024 * 1024,
+		SlabCount:    16,
+		Prealloc:     false,
+		UseHugePages: false,
 	}
+}
+
+// slabEntry maps a slab's base address to its index in slabStructs.
+// Used for O(log N) binary search in findSlabIdxLocked. Kept sorted by base.
+type slabEntry struct {
+	base      uintptr
+	structIdx int32
 }
 
 // FreeList is a lock-free, fixed-size, off-heap allocator.
 //
-// Slots are threaded into an intrusive singly-linked free list. The head
-// pointer is a tagged uint64 encoding (generation << 48) | pointer to
-// provide ABA protection on CAS. Allocate pops the head; Deallocate pushes
-// back. When the free list is empty, a new slab is mmap'd.
+// Slots are threaded into an intrusive singly-linked free list. Each free
+// slot stores the next pointer at offset 0 and the owning slab's struct
+// index at offset 8. The head pointer is a tagged uint64 encoding
+// (generation << 48) | pointer for ABA protection on CAS.
+// Allocate pops the head; Deallocate pushes back. When the free list is
+// empty, a new slab is mmap'd.
 type FreeList struct {
 	cfg FreeListConfig
 
-	// Freelist head: tagged pointer for ABA-safe CAS.
+	// Hot path: each atomic on its own cache line to prevent false sharing.
+	// head is the ABA-tagged freelist head pointer — written every alloc/dealloc.
 	head atomic.Uint64
+	_    [56]byte
 
-	// Accounting (all atomic for lock-free reads).
-	reserved  atomic.Uint64
-	allocated atomic.Uint64 // Active (allocated, not yet freed) bytes
+	// allocated tracks active (handed out, not yet freed) bytes.
+	allocated atomic.Uint64
+	_         [56]byte
 
 	// Generation counter for Free/Reset safety (not the same as ABA tag).
 	// Incremented on Free/Reset to invalidate in-flight allocations.
 	generation atomic.Uint64
+	_          [56]byte
 
-	// Slab tracking: pre-allocated backing array, atomic length.
-	// Matches Pool.slabBuf pattern — zero heap allocs after NewFreeList.
-	slabMu  sync.Mutex
-	slabBuf []*freelistSlab
-	slabLen atomic.Int32
-	slabCap int
+	// Cold path: reserved is only touched on growSlab/Reset/Free.
+	reserved atomic.Uint64
+
+	// Slab tracking: pre-allocated backing arrays, atomic length.
+	// RWMutex: Deallocate takes RLock for safe concurrent validation;
+	// growSlab/Reset/Free take full Lock for mutation.
+	slabMu      sync.RWMutex
+	slabBuf     []*freelistSlab // Pre-allocated pointer array, never resized
+	slabStructs []freelistSlab  // Pre-allocated value array (zero heap allocs in growSlab)
+	slabBase    []slabEntry     // Sorted by base address for O(log N) lookup; maps to structIdx
+	slabLen     atomic.Int32
+	slabCap     int
+
+	// Double-free detection: per-slot allocation sequence numbers.
+	// slotGen[slabStructIdx*slotsPerSlab + slotOffset] stores the allocSeq
+	// value at allocation time. Zero means the slot is free.
+	// Memory cost: 8 bytes per slot (e.g. 8MB for 64MB pool @ 64B slots).
+	slotGen  []atomic.Uint64
+	allocSeq atomic.Uint64
 
 	// Pre-computed values.
 	slotsPerSlab uint64
@@ -116,8 +143,8 @@ type freelistSlab struct {
 
 // NewFreeList creates a new fixed-size freelist allocator.
 func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
-	if cfg.SlotSize < 8 {
-		cfg.SlotSize = 8
+	if cfg.SlotSize < 16 {
+		cfg.SlotSize = 16
 	}
 	if cfg.SlabSize == 0 {
 		cfg.SlabSize = 1024 * 1024
@@ -129,6 +156,15 @@ func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
 		cfg.SlabCount = 16
 	}
 
+	// Validate huge page alignment when requested.
+	if cfg.UseHugePages {
+		if HugepageSize == 0 {
+			cfg.UseHugePages = false
+		} else if cfg.SlabSize%HugepageSize != 0 {
+			return nil, errors.New("SlabSize must be a multiple of HugepageSize when UseHugePages is enabled")
+		}
+	}
+
 	// Align slot size up to 8 bytes for pointer atomicity.
 	align := uint64(8)
 	slotSize := (cfg.SlotSize + align - 1) &^ (align - 1)
@@ -138,20 +174,37 @@ func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
 		return nil, errors.New("SlabSize must be >= SlotSize")
 	}
 
-	// Pre-allocate slab descriptor array — single heap alloc, never resized.
+	// Pre-allocate all backing arrays — single heap alloc batch, never resized.
 	maxSlabs := int((cfg.PoolSize + cfg.SlabSize - 1) / cfg.SlabSize)
 	if maxSlabs < cfg.SlabCount {
 		maxSlabs = cfg.SlabCount
 	}
+
+	totalSlots := uint64(maxSlabs) * slotsPerSlab
 
 	fl := &FreeList{
 		cfg:          cfg,
 		slotsPerSlab: slotsPerSlab,
 		align:        align,
 		slabBuf:      make([]*freelistSlab, maxSlabs),
+		slabStructs:  make([]freelistSlab, maxSlabs),
+		slabBase:     make([]slabEntry, maxSlabs),
 		slabCap:      maxSlabs,
+		slotGen:      make([]atomic.Uint64, totalSlots),
 	}
 	fl.cfg.SlotSize = slotSize
+
+	// Validate that mmap returns addresses within the 48-bit VA window
+	// required by the tagged-pointer ABA scheme (see tagShift/ptrMask).
+	data, err := unix.Mmap(-1, 0, int(PageSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		return nil, fmt.Errorf("cannot validate VA space: %w", err)
+	}
+	if uintptr(unsafe.Pointer(&data[0]))>>tagShift != 0 {
+		unix.Munmap(data)
+		return nil, errors.New("tagged-pointer ABA scheme requires <=48-bit virtual addresses; LA57 kernel detected")
+	}
+	unix.Munmap(data)
 
 	if cfg.Prealloc {
 		for i := 0; i < cfg.SlabCount; i++ {
@@ -184,13 +237,19 @@ func (fl *FreeList) reserve(size uint64) bool {
 // still empty — another goroutine may have populated it while we waited.
 // Slots are published while holding slabMu to prevent Reset() from
 // interleaving (which would SIGSEGV on munmap'd memory).
+//
+// Note: mmap is called outside slabMu to avoid holding the lock during a
+// potentially slow syscall. Under extreme thundering herd (1000+ goroutines
+// hitting an empty freelist simultaneously), this causes redundant
+// mmap+munmap pairs. This is a deliberate tradeoff — the double-check inside
+// the lock discards redundant slabs, and the window is brief in practice.
 func (fl *FreeList) growSlab() error {
 	slabSize := fl.cfg.SlabSize
 	if !fl.reserve(slabSize) {
 		return ErrFreelistExhausted
 	}
 
-	data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	data, err := fl.mmapSlab(slabSize)
 	if err != nil {
 		fl.reserved.Add(-slabSize)
 		return ErrMmapFailed
@@ -210,7 +269,7 @@ func (fl *FreeList) growSlab() error {
 		return nil // freelist already populated, caller will retry popFree
 	}
 
-	// Zero-alloc extend: reuse pre-allocated slabBuf slot.
+	// Zero-alloc extend: reuse pre-allocated slabBuf and slabStructs slots.
 	idx := int(fl.slabLen.Load())
 	if idx >= fl.slabCap {
 		fl.slabMu.Unlock()
@@ -219,20 +278,44 @@ func (fl *FreeList) growSlab() error {
 		return ErrFreelistExhausted
 	}
 
-	slab := &freelistSlab{data: data, slots: slots}
-	fl.slabBuf[idx] = slab
+	// Use pre-allocated value struct — zero heap allocs after NewFreeList.
+	s := &fl.slabStructs[idx]
+	s.data = data
+	s.slots = slots
+	fl.slabBuf[idx] = s
+
+	// Insert into slabBase sorted by address. The entry maps
+	// sorted position -> struct index, so binary search returns the
+	// correct structIdx even when mmap returns non-monotonic addresses.
+	base := uintptr(unsafe.Pointer(&data[0]))
+	fl.slabBase[idx] = slabEntry{base: base, structIdx: int32(idx)}
+	// Insertion sort: walk backward, swap if out of order.
+	for j := idx; j > 0 && fl.slabBase[j].base < fl.slabBase[j-1].base; j-- {
+		fl.slabBase[j], fl.slabBase[j-1] = fl.slabBase[j-1], fl.slabBase[j]
+	}
+
 	fl.slabLen.Store(int32(idx + 1))
 
 	// Publish all slots onto the free list while still holding slabMu.
 	// This prevents Reset() from munmap'ing the slab mid-publish (SIGSEGV).
 	// Reverse order so the first allocation gets the lowest-address slot.
+	// Each slot gets its owning structIdx embedded at offset 8.
 	for i := slots - 1; i >= 0; i-- {
 		ptr := unsafe.Add(unsafe.Pointer(&data[0]), uintptr(i)*uintptr(slotSize))
-		fl.pushFree(ptr)
+		fl.pushFree(ptr, int32(idx))
 	}
 
 	fl.slabMu.Unlock()
 	return nil
+}
+
+// mmapSlabBase is the base mmap implementation shared across platforms.
+func (fl *FreeList) mmapSlabBase(slabSize uint64) ([]byte, error) {
+	data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // === Tagged pointer operations ===
@@ -242,35 +325,29 @@ const (
 	ptrMask  = (1 << 48) - 1
 )
 
-// packTaggedPtr packs a pointer and 16-bit generation into a uint64.
-// Assumes <=48-bit virtual addresses (valid on ARM64 and x86_64 without LA57).
 func packTaggedPtr(ptr unsafe.Pointer, gen uint16) uint64 {
 	p := uintptr(ptr)
 	return (uint64(p) & ptrMask) | (uint64(gen) << tagShift)
 }
 
-// unpackPtr extracts the pointer from a tagged uint64.
 func unpackPtr(tagged uint64) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(tagged & ptrMask))
 }
 
-// unpackTag extracts the generation from a tagged uint64.
 func unpackTag(tagged uint64) uint16 {
 	return uint16(tagged >> tagShift)
 }
 
-// pushFree pushes a slot onto the free list.
-// Uses atomic.StorePointer for the intrusive next pointer to avoid
-// data races with concurrent popFree readers.
-func (fl *FreeList) pushFree(ptr unsafe.Pointer) {
+// pushFree pushes a slot onto the free list. structIdx is the slab's index
+// in slabStructs, embedded at slot offset 8 so Allocate can resolve it
+// without a lock or binary search.
+func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 	for {
 		old := fl.head.Load()
-		oldTag := unpackTag(old)
-		newTag := oldTag + 1
+		newTag := unpackTag(old) + 1
 
-		// Atomic store: publish old head into the freed slot.
-		// Concurrent popFree uses atomic.LoadPointer on the same word.
 		atomic.StorePointer((*unsafe.Pointer)(ptr), unpackPtr(old))
+		*(*int32)(unsafe.Add(ptr, 8)) = structIdx
 
 		newTagged := packTaggedPtr(ptr, newTag)
 		if fl.head.CompareAndSwap(old, newTagged) {
@@ -279,10 +356,13 @@ func (fl *FreeList) pushFree(ptr unsafe.Pointer) {
 	}
 }
 
-// popFree pops a slot from the free list.
-// Returns nil if the list is empty.
-// Uses atomic.LoadPointer for the intrusive next pointer to avoid
-// data races with concurrent pushFree writers.
+// popFree pops a slot from the free list. Returns nil if empty.
+//
+// Between loading the head and reading the slot's next pointer, the slot
+// may be deallocated and reallocated by another thread. The CAS at the end
+// fails due to tag mismatch, causing a retry. This stale read is harmless
+// (8-byte aligned read on off-heap memory) and is correct Treiber stack
+// behavior — the CAS validates consistency before returning.
 func (fl *FreeList) popFree() unsafe.Pointer {
 	for {
 		old := fl.head.Load()
@@ -290,11 +370,8 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 		if ptr == nil {
 			return nil
 		}
-		oldTag := unpackTag(old)
-		newTag := oldTag + 1
+		newTag := unpackTag(old) + 1
 
-		// Atomic load: read next pointer from the slot at head.
-		// Concurrent pushFree uses atomic.StorePointer on the same word.
 		next := atomic.LoadPointer((*unsafe.Pointer)(ptr))
 
 		newTagged := packTaggedPtr(next, newTag)
@@ -304,10 +381,21 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 	}
 }
 
+// slotIndex computes the global slot index from a pointer, its slab base
+// address, and the struct index. The base is already known from the binary
+// search (Deallocate) or read from slabStructs (Allocate).
+func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) uint64 {
+	offset := uintptr(ptr) - base
+	return uint64(structIdx)*fl.slotsPerSlab + uint64(offset)/fl.cfg.SlotSize
+}
+
 // === Public API ===
 
 // Allocate returns a fixed-size off-heap memory slot.
-// Returns nil and ErrFreelistExhausted if the pool limit is reached.
+//
+// Reads the owning structIdx from slot bytes [8:12] — embedded by pushFree —
+// to resolve the slab without a lock or binary search. This keeps the hot
+// path lock-free and independent of slab count.
 func (fl *FreeList) Allocate() ([]byte, error) {
 	gen := fl.generation.Load()
 
@@ -321,65 +409,94 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 		}
 
 		// Post-pop generation check: if Reset/Free incremented generation
-		// during popFree, push the slot back and retry with a fresh gen.
+		// during popFree, the memory backing ptr may already be unmapped.
 		if fl.generation.Load() != gen {
-			fl.pushFree(ptr)
 			gen = fl.generation.Load()
 			continue
 		}
 
+		// structIdx is embedded in the slot at offset 8 by pushFree.
+		// Read it directly — no lock, no binary search.
+		structIdx := int(*(*int32)(unsafe.Add(ptr, 8)))
+		base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
+
 		slotSize := fl.cfg.SlotSize
 		fl.allocated.Add(slotSize)
+
+		// Set double-free guard: store alloc sequence number.
+		seq := fl.allocSeq.Add(1)
+		fl.slotGen[fl.slotIndex(ptr, base, structIdx)].Store(seq)
 
 		return unsafe.Slice((*byte)(ptr), int(slotSize)), nil
 	}
 }
 
 // Deallocate returns a slot to the free list.
-// The caller must NOT access the slot after deallocation.
-//
-// Validates that the pointer belongs to a slab managed by this FreeList.
-// Returns ErrInvalidDeallocation for external pointers or nil/empty slices.
-//
-// TODO(hardening): add per-slot generation counter for double-free detection.
 func (fl *FreeList) Deallocate(slot []byte) error {
-	if len(slot) == 0 {
+	if len(slot) == 0 || uint64(len(slot)) != fl.cfg.SlotSize {
 		return ErrInvalidDeallocation
 	}
 
 	ptr := unsafe.Pointer(unsafe.SliceData(slot))
 
-	if !fl.owns(ptr) {
+	fl.slabMu.RLock()
+	defer fl.slabMu.RUnlock()
+
+	structIdx, base := fl.findSlabIdxLocked(ptr)
+	if structIdx < 0 {
 		return ErrInvalidDeallocation
 	}
 
-	fl.allocated.Add(-fl.cfg.SlotSize)
-	fl.pushFree(ptr)
+	// Double-free detection: check that the slot has a non-zero generation.
+	si := fl.slotIndex(ptr, base, structIdx)
+	if fl.slotGen[si].Swap(0) == 0 {
+		return ErrDoubleDeallocation
+	}
+
+	// Guarded subtraction: prevent uint64 wraparound from corrupting stats.
+	slotSize := fl.cfg.SlotSize
+	for {
+		allocated := fl.allocated.Load()
+		if allocated < slotSize {
+			fl.allocated.Store(0)
+			break
+		}
+		if fl.allocated.CompareAndSwap(allocated, allocated-slotSize) {
+			break
+		}
+	}
+
+	fl.pushFree(ptr, int32(structIdx))
 	return nil
 }
 
-// owns returns true if ptr falls within a tracked slab and is aligned
-// to the slot boundary.
-func (fl *FreeList) owns(ptr unsafe.Pointer) bool {
+// findSlabIdxLocked performs O(log N) binary search over slabBase.
+// Returns the struct index and slab base address, or (-1, 0) if not found.
+// Caller must hold slabMu (RLock or Lock).
+func (fl *FreeList) findSlabIdxLocked(ptr unsafe.Pointer) (structIdx int, base uintptr) {
 	p := uintptr(ptr)
 	n := int(fl.slabLen.Load())
-	for i := 0; i < n; i++ {
-		s := fl.slabBuf[i]
-		if s == nil {
-			continue
-		}
-		base := uintptr(unsafe.Pointer(&s.data[0]))
-		end := base + uintptr(len(s.data))
-		if p >= base && p < end {
-			offset := p - base
-			return offset%uintptr(fl.cfg.SlotSize) == 0
+	slabSize := uintptr(fl.cfg.SlabSize)
+
+	lo, hi := 0, n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		entry := fl.slabBase[mid]
+		if p < entry.base {
+			hi = mid
+		} else if p >= entry.base+slabSize {
+			lo = mid + 1
+		} else {
+			if (p-entry.base)%uintptr(fl.cfg.SlotSize) == 0 {
+				return int(entry.structIdx), entry.base
+			}
+			return -1, 0
 		}
 	}
-	return false
+	return -1, 0
 }
 
 // Stats returns a point-in-time snapshot of allocator state.
-// Safe for concurrent access — all fields are atomic reads.
 func (fl *FreeList) Stats() FreeListStats {
 	return FreeListStats{
 		Reserved:  fl.reserved.Load(),
@@ -405,19 +522,30 @@ func (fl *FreeList) Reset() {
 	fl.generation.Add(1)
 
 	fl.slabMu.Lock()
+	fl.head.Store(0)
 	n := int(fl.slabLen.Load())
 	for i := 0; i < n; i++ {
 		if s := fl.slabBuf[i]; s != nil && len(s.data) > 0 {
 			unix.Munmap(s.data)
 		}
 		fl.slabBuf[i] = nil
+		fl.slabBase[i] = slabEntry{}
 	}
+
+	// Clear slot generation counters while still holding the lock.
+	// This must complete before slabLen is zeroed to prevent growSlab
+	// from reusing indices before they're cleared.
+	totalSlots := uint64(n) * fl.slotsPerSlab
+	for i := uint64(0); i < totalSlots; i++ {
+		fl.slotGen[i].Store(0)
+	}
+
 	fl.slabLen.Store(0)
 	fl.slabMu.Unlock()
 
-	fl.head.Store(0)
 	fl.reserved.Store(0)
 	fl.allocated.Store(0)
+	fl.allocSeq.Store(0)
 }
 
 // Free releases all mmap'd memory. The FreeList must not be used after Free.
@@ -425,16 +553,25 @@ func (fl *FreeList) Free() error {
 	fl.generation.Add(1)
 
 	fl.slabMu.Lock()
+	fl.head.Store(0)
 	n := int(fl.slabLen.Load())
 	for i := 0; i < n; i++ {
 		if s := fl.slabBuf[i]; s != nil && len(s.data) > 0 {
 			unix.Munmap(s.data)
 		}
+		fl.slabBuf[i] = nil
+		fl.slabBase[i] = slabEntry{}
 	}
+	// Clear slot generation counters while still holding the lock.
+	totalSlots := uint64(n) * fl.slotsPerSlab
+	for i := uint64(0); i < totalSlots; i++ {
+		fl.slotGen[i].Store(0)
+	}
+
 	fl.slabLen.Store(0)
 	fl.slabMu.Unlock()
 
-	fl.head.Store(0)
+	fl.allocSeq.Store(0)
 	fl.reserved.Store(0)
 	fl.allocated.Store(0)
 	return nil

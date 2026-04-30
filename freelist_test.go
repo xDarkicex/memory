@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -90,8 +91,10 @@ func TestFreeListExhaustion(t *testing.T) {
 		}
 		count++
 	}
-	if count == 0 {
-		t.Error("expected at least one allocation before exhaustion")
+	// PoolSize=64KB, SlotSize=64B → exactly 1024 slots.
+	expected := int(cfg.PoolSize / cfg.SlotSize)
+	if count != expected {
+		t.Errorf("exhaustion count = %d, want %d", count, expected)
 	}
 }
 
@@ -108,16 +111,30 @@ func TestFreeListDoubleFree(t *testing.T) {
 	}
 	defer fl.Free()
 
-	// Double-free detection is a hardening TODO.
-	// Currently the second Deallocate silently corrupts the freelist.
-	// When implemented, this test should expect ErrDoubleDeallocation.
-	slot, _ := fl.Allocate()
+	slot, err := fl.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+
+	// First deallocate should succeed.
 	if err := fl.Deallocate(slot); err != nil {
 		t.Fatalf("first Deallocate: %v", err)
 	}
-	// Second deallocate: currently succeeds (sharp edge), future: error.
-	_ = fl.Deallocate(slot)
-	t.Log("double-free detection is a hardening TODO — second deallocate currently succeeds")
+
+	// Second deallocate of the same slot must return ErrDoubleDeallocation.
+	if err := fl.Deallocate(slot); err != ErrDoubleDeallocation {
+		t.Errorf("second Deallocate: got %v, want ErrDoubleDeallocation", err)
+	}
+
+	// Verify the freelist is not corrupted: allocate a slot and use it.
+	newSlot, err := fl.Allocate()
+	if err != nil {
+		t.Fatalf("post-double-free Allocate: %v", err)
+	}
+	if len(newSlot) != 64 {
+		t.Errorf("post-double-free slot len = %d, want 64", len(newSlot))
+	}
+	fl.Deallocate(newSlot)
 }
 
 func TestFreeListInvalidDeallocation(t *testing.T) {
@@ -144,6 +161,18 @@ func TestFreeListInvalidDeallocation(t *testing.T) {
 	if err := fl.Deallocate(external); err != ErrInvalidDeallocation {
 		t.Errorf("external slice: got %v, want ErrInvalidDeallocation", err)
 	}
+
+	// Unaligned pointer within a valid slab must be rejected.
+	slot, err := fl.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	unaligned := slot[1:] // offset by 1 byte from valid slot boundary
+	if err := fl.Deallocate(unaligned); err != ErrInvalidDeallocation {
+		t.Errorf("unaligned pointer: got %v, want ErrInvalidDeallocation", err)
+	}
+	// Return the properly-aligned slot so it doesn't leak.
+	fl.Deallocate(slot)
 }
 
 func TestFreeListReset(t *testing.T) {
@@ -199,37 +228,118 @@ func TestFreeListConcurrent(t *testing.T) {
 	const goroutines = 8
 	const opsPerGoroutine = 1000
 
+	errCh := make(chan error, goroutines)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
 	for g := 0; g < goroutines; g++ {
-		go func() {
+		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
 				slot, err := fl.Allocate()
 				if err != nil {
-					t.Errorf("Allocate: %v", err)
+					select {
+					case errCh <- fmt.Errorf("goroutine %d Allocate %d: %v", id, i, err):
+					default:
+					}
 					return
 				}
-				// Minimal use: write goroutine tag.
 				if len(slot) > 0 {
-					slot[0] = byte(g)
+					slot[0] = byte(id)
 				}
 				if err := fl.Deallocate(slot); err != nil {
-					t.Errorf("Deallocate: %v", err)
+					select {
+					case errCh <- fmt.Errorf("goroutine %d Deallocate %d: %v", id, i, err):
+					default:
+					}
 					return
 				}
 			}
-		}()
+		}(g)
 	}
 	wg.Wait()
+	close(errCh)
 
-	// After all deallocations, the freelist should be full again.
-	// The allocated count should be 0 since everything was returned.
+	for e := range errCh {
+		t.Error(e)
+	}
+
 	stats := fl.Stats()
 	if stats.Allocated != 0 {
 		t.Errorf("after concurrent cycle: allocated = %d, want 0", stats.Allocated)
 	}
+
+	// Verify the freelist is still usable after the concurrent cycle.
+	for i := 0; i < goroutines*opsPerGoroutine; i++ {
+		if _, err := fl.Allocate(); err != nil {
+			t.Fatalf("post-cycle re-allocate %d failed: %v", i, err)
+		}
+	}
+	stats = fl.Stats()
+	want := uint64(goroutines*opsPerGoroutine) * fl.cfg.SlotSize
+	if stats.Allocated != want {
+		t.Errorf("post-cycle allocated = %d, want %d", stats.Allocated, want)
+	}
+}
+
+// TestFreeListResetConcurrency verifies that Allocate does not crash
+// when racing with Reset (generation guard stress test).
+func TestFreeListResetConcurrency(t *testing.T) {
+	// This test exercises the generation-guard retry path by racing Allocate
+	// against Reset (100 storms). Passing proves the code paths are crash-free
+	// under concurrent generation bumps — it does NOT validate correctness
+	// (concurrent Reset is explicitly outside the documented contract).
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 64 * 1024
+	cfg.SlabCount = 4
+	cfg.Prealloc = true
+
+	fl, err := NewFreeList(cfg)
+	if err != nil {
+		t.Fatalf("NewFreeList: %v", err)
+	}
+	defer fl.Free()
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Allocator goroutine: continuously allocate and deallocate.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				slot, err := fl.Allocate()
+				if err == nil {
+					fl.Deallocate(slot)
+				}
+			}
+		}
+	}()
+
+	// Resetter goroutine: periodically Reset.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			fl.Reset()
+		}
+		close(stop)
+	}()
+
+	wg.Wait()
+
+	// Verify the freelist is still usable after 100 Reset storms.
+	slot, err := fl.Allocate()
+	if err != nil {
+		t.Fatalf("freelist unusable after reset storm: %v", err)
+	}
+	fl.Deallocate(slot)
 }
 
 // --- Zero-allocation verification ---
@@ -276,27 +386,6 @@ func BenchmarkFreeListHotPath(b *testing.B) {
 
 	for b.Loop() {
 		slot, _ := fl.Allocate()
-		fl.Deallocate(slot)
-	}
-}
-
-func BenchmarkFreeListAllocateOnly(b *testing.B) {
-	cfg := DefaultFreeListConfig()
-	cfg.PoolSize = 64 * 1024 * 1024
-	cfg.SlotSize = 64
-	cfg.SlabSize = 1024 * 1024
-	cfg.Prealloc = true
-
-	fl, _ := NewFreeList(cfg)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for b.Loop() {
-		slot, err := fl.Allocate()
-		if err != nil {
-			b.Fatal(err)
-		}
 		fl.Deallocate(slot)
 	}
 }

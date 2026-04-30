@@ -7,18 +7,12 @@ import (
 	"unsafe"
 )
 
-const (
-	MAP_HUGETLB   = 0x40000
-	MADV_HUGEPAGE = 14
-	MADV_FREE     = 8
-)
-
 // mmapSlab on Linux attempts huge page allocation when UseHugePages is enabled.
 // Falls back to regular mmap if huge pages are unavailable.
 func (p *Pool) mmapSlab(slabSize uint64) ([]byte, error) {
 	if p.cfg.UseHugePages {
 		data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE,
-			unix.MAP_ANON|unix.MAP_PRIVATE|MAP_HUGETLB)
+			unix.MAP_ANON|unix.MAP_PRIVATE|unix.MAP_HUGETLB)
 		if err != nil {
 			// MAP_HUGETLB requires root or hugepage support; fall back to regular mmap
 			return p.mmapSlabRegular(slabSize)
@@ -39,7 +33,33 @@ func (p *Pool) mmapSlabRegular(slabSize uint64) ([]byte, error) {
 	// Request THP promotion for slabs >= HugepageSize. The kernel promotes
 	// 2MB-aligned regions opportunistically; ignored silently if THP is disabled.
 	if slabSize >= HugepageSize {
-		_ = unix.Madvise(data, MADV_HUGEPAGE)
+		_ = unix.Madvise(data, unix.MADV_HUGEPAGE)
+	}
+	return data, nil
+}
+
+// mmapSlab on Linux attempts huge page allocation when UseHugePages is enabled.
+// Falls back to regular mmap if huge pages are unavailable.
+func (fl *FreeList) mmapSlab(slabSize uint64) ([]byte, error) {
+	if fl.cfg.UseHugePages {
+		data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE,
+			unix.MAP_ANON|unix.MAP_PRIVATE|unix.MAP_HUGETLB)
+		if err != nil {
+			return fl.mmapSlabRegular(slabSize)
+		}
+		return data, nil
+	}
+	return fl.mmapSlabRegular(slabSize)
+}
+
+// mmapSlabRegular creates a regular (non-hugepage) mmap-backed slab for FreeList.
+func (fl *FreeList) mmapSlabRegular(slabSize uint64) ([]byte, error) {
+	data, err := fl.mmapSlabBase(slabSize)
+	if err != nil {
+		return nil, err
+	}
+	if slabSize >= HugepageSize {
+		_ = unix.Madvise(data, unix.MADV_HUGEPAGE)
 	}
 	return data, nil
 }
@@ -48,6 +68,10 @@ func (p *Pool) mmapSlabRegular(slabSize uint64) ([]byte, error) {
 // MADV_DONTNEED is eager: the kernel reclaims pages immediately and
 // re-faults them as zero on next access. For guaranteed zeroing after
 // a HintDontNeed, callers must call ZeroMemory explicitly.
+//
+// Platform divergence: HintDontNeed differs between Linux (MADV_DONTNEED,
+// eager page discard) and Darwin (MADV_FREE, lazy reclaim). Callers
+// requiring deterministic zeroing should call ZeroMemory explicitly.
 func Hint(h MemoryHint, ptr unsafe.Pointer, length int) {
 	if length <= 0 {
 		return
@@ -81,5 +105,5 @@ func HintFreeLinux(ptr unsafe.Pointer, length int) {
 	pageOffset := uintptr(ptr) % pageSize
 	pageBase := unsafe.Add(ptr, -int(pageOffset))
 	pageLen := (pageOffset + uintptr(length) + pageSize - 1) &^ (pageSize - 1)
-	_ = unix.Madvise(unsafe.Slice((*byte)(pageBase), pageLen), MADV_FREE)
+	_ = unix.Madvise(unsafe.Slice((*byte)(pageBase), pageLen), unix.MADV_FREE)
 }
