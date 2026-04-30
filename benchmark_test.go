@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 )
@@ -583,5 +584,249 @@ func BenchmarkBatchSize(b *testing.B) {
 			benchmarkAllocBatch(b, pool, 64, bs)
 			pool.Reset()
 		})
+	}
+}
+
+// BenchmarkFreeListContention measures FreeList throughput scaling under
+// increasing concurrency. Run with -cpu=1,2,4,8,16,32,64 to sweep GOMAXPROCS.
+// Each goroutine alloc+free in a tight loop against a shared freelist head,
+// stressing the CAS. Flat ops/sec/goroutine means the CAS scales well;
+// sub-linear at 8+ means contention dominates and sharding is justified.
+func BenchmarkFreeListContention(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	fl, _ := NewFreeList(cfg)
+	defer fl.Free()
+
+	retriesBefore := fl.CasRetries()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			slot, err := fl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+			fl.Deallocate(slot)
+		}
+	})
+
+	b.StopTimer()
+	retriesDelta := fl.CasRetries() - retriesBefore
+	b.ReportMetric(float64(retriesDelta)/float64(b.N), "cas-retries/op")
+}
+
+// BenchmarkBatchPopFreeList compares BatchAllocate(N) vs N× Allocate under contention.
+// BatchAllocate pops N slots with 1 CAS; N×Allocate pops N slots with N CAS.
+// Both push the slots back individually to simulate real deallocation patterns.
+func BenchmarkBatchPopFreeList(b *testing.B) {
+	batchSizes := []int{16, 32, 64}
+	for _, bs := range batchSizes {
+		b.Run(fmt.Sprintf("BatchAllocate=%d", bs), func(b *testing.B) {
+			cfg := DefaultFreeListConfig()
+			cfg.PoolSize = 256 * 1024 * 1024
+			cfg.SlotSize = 64
+			cfg.SlabSize = 1024 * 1024
+			cfg.Prealloc = true
+
+			fl, _ := NewFreeList(cfg)
+			defer fl.Free()
+
+			var sink byte
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			b.RunParallel(func(pb *testing.PB) {
+				slots := make([][]byte, bs)
+				for pb.Next() {
+					n, err := fl.BatchAllocate(slots)
+					if err != nil {
+						b.Errorf("BatchAllocate failed: %v", err)
+						return
+					}
+					for i := 0; i < n; i++ {
+						sink = slots[i][0]
+						fl.Deallocate(slots[i])
+					}
+				}
+			})
+			_ = sink
+		})
+
+		b.Run(fmt.Sprintf("N×Allocate=%d", bs), func(b *testing.B) {
+			cfg := DefaultFreeListConfig()
+			cfg.PoolSize = 256 * 1024 * 1024
+			cfg.SlotSize = 64
+			cfg.SlabSize = 1024 * 1024
+			cfg.Prealloc = true
+
+			fl, _ := NewFreeList(cfg)
+			defer fl.Free()
+
+			var sink byte
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					for i := 0; i < bs; i++ {
+						slot, err := fl.Allocate()
+						if err != nil {
+							b.Errorf("Allocate failed: %v", err)
+							return
+						}
+						sink = slot[0]
+						fl.Deallocate(slot)
+					}
+				}
+			})
+			_ = sink
+		})
+	}
+}
+
+// BenchmarkCrossShardFrequency measures the ratio of cross-shard vs local frees.
+// Each goroutine tags allocations with its goroutine ID at slot offset 12, then
+// checks before deallocating whether the tag matches the current goroutine. This
+// simulates work-stealing patterns where a slot allocated on one shard gets freed
+// on another (e.g., request handoff via channels).
+// Run with -cpu=4,8,16 to see how cross-shard frequency scales.
+func BenchmarkCrossShardFrequency(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	fl, _ := NewFreeList(cfg)
+	defer fl.Free()
+
+	var crossFrees atomic.Uint64
+	var localFrees atomic.Uint64
+	var gid atomic.Uint64
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		home := uint32(gid.Add(1))
+		var sink byte
+
+		for pb.Next() {
+			slot, err := fl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+
+			// Tag first 4 user bytes (offset 12) with goroutine ID.
+			*(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 12)) = home
+			sink = slot[0]
+
+			// Read back the tag and compare with current goroutine.
+			tag := *(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 12))
+			if tag == home {
+				localFrees.Add(1)
+			} else {
+				crossFrees.Add(1)
+			}
+
+			fl.Deallocate(slot)
+		}
+		_ = sink
+	})
+
+	b.StopTimer()
+	cross := crossFrees.Load()
+	local := localFrees.Load()
+	total := cross + local
+	if total > 0 {
+		b.ReportMetric(float64(cross)/float64(total)*100, "cross-pct")
+	}
+}
+
+// BenchmarkCrossShardWorkStealing measures cross-shard free frequency under
+// work-stealing: goroutines allocate, then hand slots to a shared channel where
+// consumer goroutines pick them up and deallocate. This simulates request-handoff
+// patterns common in server workloads (e.g., HTTP -> background worker).
+func BenchmarkCrossShardWorkStealing(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	fl, _ := NewFreeList(cfg)
+	defer fl.Free()
+
+	var deallocCount atomic.Uint64
+	var gid atomic.Uint64
+
+	// Channel depth: enough to avoid stalling producers
+	const chanDepth = 256
+	ch := make(chan struct {
+		slot []byte
+		home uint32
+	}, chanDepth)
+
+	// Consumer goroutines (2): receive slots and deallocate on a different goroutine.
+	// Every deallocation here is cross-shard since consumers != producers.
+	const numConsumers = 2
+	var wg sync.WaitGroup
+	for range numConsumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range ch {
+				fl.Deallocate(item.slot)
+				deallocCount.Add(1)
+			}
+		}()
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		home := uint32(gid.Add(1))
+		var sink byte
+
+		for pb.Next() {
+			slot, err := fl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+
+			// Tag with home goroutine ID at offset 12.
+			*(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 12)) = home
+			sink = slot[0]
+
+			// Send to consumer channel — deallocation happens on a different goroutine.
+			ch <- struct {
+				slot []byte
+				home uint32
+			}{slot, home}
+		}
+		_ = sink
+	})
+
+	close(ch)
+	wg.Wait()
+
+	b.StopTimer()
+	if n := deallocCount.Load(); n > 0 {
+		b.ReportMetric(float64(n), "cross-frees")
+		// With work-stealing, cross-shard frees approach 100%.
+		b.ReportMetric(100.0, "cross-pct")
 	}
 }

@@ -110,6 +110,11 @@ type FreeList struct {
 	generation atomic.Uint64
 	_          [56]byte
 
+	// CAS retry counter for observability. Incremented on every failed CAS
+	// in pushFree and popFree. Useful for contention profiling.
+	casRetries atomic.Uint64
+	_          [56]byte
+
 	// Cold path: reserved is only touched on growSlab/Reset/Free.
 	reserved atomic.Uint64
 
@@ -353,6 +358,7 @@ func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 		if fl.head.CompareAndSwap(old, newTagged) {
 			return
 		}
+		fl.casRetries.Add(1)
 	}
 }
 
@@ -378,6 +384,99 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 		if fl.head.CompareAndSwap(old, newTagged) {
 			return ptr
 		}
+		fl.casRetries.Add(1)
+	}
+}
+
+// batchPop pops up to len(buf) raw pointers from the freelist with a single CAS.
+// No bookkeeping (no slotGen, no allocated) — caller must handle it.
+// Prefer BatchAllocate for external use.
+func (fl *FreeList) batchPop(buf []unsafe.Pointer) int {
+	if len(buf) == 0 {
+		return 0
+	}
+	for {
+		old := fl.head.Load()
+		ptr := unpackPtr(old)
+		if ptr == nil {
+			return 0
+		}
+		newTag := unpackTag(old) + 1
+
+		buf[0] = ptr
+		current := ptr
+		n := 1
+		for n < len(buf) {
+			next := atomic.LoadPointer((*unsafe.Pointer)(current))
+			if next == nil {
+				break
+			}
+			buf[n] = next
+			current = next
+			n++
+		}
+
+		tailNext := atomic.LoadPointer((*unsafe.Pointer)(current))
+		newTagged := packTaggedPtr(tailNext, newTag)
+		if fl.head.CompareAndSwap(old, newTagged) {
+			return n
+		}
+		fl.casRetries.Add(1)
+	}
+}
+
+// BatchAllocate pops up to len(slots) off-heap memory slots with a single CAS.
+// Fills the provided slice with []byte views. Returns the count allocated
+// (≤ len(slots), 0 if pool is empty) and any error from slab growth.
+//
+// Accounting is batched: allocated counter and allocSeq are updated once for
+// the batch, not per slot. slotGen is still set per slot (unavoidable).
+// Zero heap allocations — caller provides the slots buffer.
+func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
+	if len(slots) == 0 {
+		return 0, nil
+	}
+	gen := fl.generation.Load()
+	slotSize := fl.cfg.SlotSize
+
+	// Clamp to stack-friendly batch size.
+	n := len(slots)
+	if n > 128 {
+		n = 128
+	}
+
+	var ptrBuf [128]unsafe.Pointer
+	batch := ptrBuf[:n]
+
+	for {
+		count := fl.batchPop(batch)
+		if count == 0 {
+			if err := fl.growSlab(); err != nil {
+				return 0, err
+			}
+			continue
+		}
+
+		if fl.generation.Load() != gen {
+			gen = fl.generation.Load()
+			continue
+		}
+
+		// Batch accounting: single atomic increment per counter.
+		fl.allocated.Add(uint64(count) * slotSize)
+		lastSeq := fl.allocSeq.Add(uint64(count))
+
+		for i := 0; i < count; i++ {
+			ptr := batch[i]
+			structIdx := int(*(*int32)(unsafe.Add(ptr, 8)))
+			base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
+			si := fl.slotIndex(ptr, base, structIdx)
+			// Distribute sequence numbers: slot i gets lastSeq - (count-1-i).
+			seq := lastSeq - uint64(count-1-i)
+			fl.slotGen[si].Store(seq)
+			slots[i] = unsafe.Slice((*byte)(ptr), int(slotSize))
+		}
+		return count, nil
 	}
 }
 
@@ -503,15 +602,16 @@ func (fl *FreeList) Stats() FreeListStats {
 		Allocated: fl.allocated.Load(),
 		SlotSize:  fl.cfg.SlotSize,
 		SlabCount: fl.slabLen.Load(),
+		CasRetries: fl.casRetries.Load(),
 	}
 }
 
-// FreeListStats holds allocator statistics.
 type FreeListStats struct {
 	Reserved  uint64
 	Allocated uint64
 	SlotSize  uint64
 	SlabCount int32
+	CasRetries uint64
 }
 
 // Reset releases all slabs and reinitializes the free list to empty.
@@ -590,4 +690,9 @@ func (fl *FreeList) SlotSize() uint64 {
 // SlabSize returns the configured slab size.
 func (fl *FreeList) SlabSize() uint64 {
 	return fl.cfg.SlabSize
+}
+
+// CasRetries returns the total number of CAS retries (contention metric).
+func (fl *FreeList) CasRetries() uint64 {
+	return fl.casRetries.Load()
 }
