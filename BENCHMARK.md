@@ -433,9 +433,54 @@ Apple M2, 8 cores, best-of-3 runs.
 | Platform | Hot ns/op (Dealloc) | Hot ns/op (HP) | Concurrent 8-core ns/op | Notes |
 |----------|--------------------|----------------|------------------------|-------|
 | ARM64 M2 Darwin (8 cores, 4P+4E) | 54.4 | 77.5 | 411.6 (Dealloc), 337.9 (HP) | Hybrid arch skews 8-core results |
+| ARM64 M2 Linux (Docker, aarch64) | — | — | — | Stress hammer: 15.43M ops/sec, 0 corruption. See §6.2 |
 | ARM64 M3 Darwin | — | — | — | Pending |
 | ARM64 Graviton Linux | — | — | — | Pending |
 | x86_64 Zen4 Linux | — | — | — | Pending |
+
+---
+
+## 6.2 — Linux Docker Stress Hammer (aarch64, PID Threshold)
+
+**Setup:** Docker Desktop on Apple M2, `golang:1.25-bookworm` image, Linux 6.10.14-linuxkit aarch64.
+Identical test parameters to §5.4: 128MB pool, 128B slots, 256 shards, 256 workers, PID adaptive threshold.
+Linux uses `MADV_DONTNEED` (eager page reclaim) vs macOS `MADV_FREE` (lazy).
+
+### Summary
+
+| Run | Total ops | Avg ops/sec | Errors | Rate | Recovery | Corruptions |
+|-----|-----------|-------------|--------|------|----------|-------------|
+| 30s run 1 | 431.9M | 14.40M | 1.14M | 0.26% | 10K/10K | 0 |
+| 30s run 2 | 463.2M | 15.43M | 1.48M | 0.32% | 10K/10K | 0 |
+
+### Per-second throughput (run 2, 463M ops)
+
+Throughput climbed from 11.2M/s (second 1) to 15.4M/s steady state (seconds 10-30).
+Peak at second 23: 15.47M/s. Zero seconds with zero throughput — no stalls.
+
+### Linux vs macOS (same hardware, same test parameters)
+
+| Metric | macOS (Darwin) | Linux (Docker aarch64) | Delta |
+|--------|---------------|----------------------|-------|
+| Throughput | 14.43M/s | 15.43M/s | **+7%** |
+| Error rate | 0.32% | 0.32% | Same |
+| Corruptions | 0 | 0 | Same |
+| Recovery | 10K/10K | 10K/10K | Same |
+| RSS | ~6 MB | ~6 MB | Same |
+
+The 7% throughput advantage on Linux is likely from `MADV_DONTNEED` (eager page
+reclaim reducing TLB pressure) vs macOS `MADV_FREE` (lazy, pages linger). Linux
+kernel I/O and scheduling differences in Docker may also contribute. The key
+result: zero corruption on both platforms, identical error profiles, identical
+recovery behavior. The Linux code path (`memory_linux.go` mmap/madvise) is
+validated.
+
+### GC Isolation (Linux)
+
+GODEBUG=gctrace=1 showed steady `0→0→0 MB` live heap throughout the 30-second
+run. The PID controller (100ms ticker) adds zero heap pressure on Linux — same
+as macOS. All GC cycles were `(forced)` from test scaffolding, never from heap
+growth.
 
 ---
 
