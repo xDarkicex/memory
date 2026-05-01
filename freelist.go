@@ -210,7 +210,7 @@ func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
 	}
 	if uintptr(unsafe.Pointer(&data[0]))>>tagShift != 0 {
 		unix.Munmap(data)
-		return nil, errors.New("tagged-pointer ABA scheme requires <=48-bit virtual addresses; LA57 kernel detected")
+		return nil, ErrLA57
 	}
 	unix.Munmap(data)
 

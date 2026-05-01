@@ -33,7 +33,7 @@ go get github.com/xDarkicex/memory
 | Type | Allocation model | Free model | Concurrency | Best for |
 |------|-----------------|------------|-------------|----------|
 | `Pool` | Variable-size (CAS slab) | Bulk `Reset()` | Lock-free multi-producer | Request-scoped scratch buffers, parse buffers |
-| `Arena` | Variable-size (CAS bump pointer) | `Reset()` (rewind) or `Free()` (destroy) | Single-producer | Frame scratch, per-request temp data |
+| `Arena` | Variable-size (CAS bump pointer) | `Reset()` (rewind) or `Free()` (destroy) | Lock-free multi-producer | Frame scratch, per-request temp data |
 | `FreeList` | Fixed-size (Treiber stack) | Per-object `Deallocate()` | Lock-free | Fixed-size object pools, per-vector allocations |
 | `ShardedFreeList` | Fixed-size (sharded + Hyaline SMR) | Per-object `Deallocate()` or `Retire()` | Lock-free, sharded by goroutine | High-concurrency fixed-size pools, vector DBs |
 
@@ -58,7 +58,7 @@ buf, err := pool.Allocate(4096) // off-heap, zero GC
 pool.Reset() // bulk-free everything
 ```
 
-### Arena (variable-size, single-producer)
+### Arena (variable-size, lock-free bump pointer)
 
 ```go
 arena, err := memory.NewArena(1024 * 1024) // 1MB
@@ -296,6 +296,10 @@ and use it before your second deallocate.
 | `ErrInvalidDeallocation` | Slot size mismatch or pointer outside any slab |
 | `ErrDoubleDeallocation` | Slot freed or retired twice |
 | `ErrLA57` | 5-level paging detected; tagged pointers require ≤48-bit virtual addresses |
+| `ErrPoolFreed` | Pool has been freed |
+| `ErrFreelistFreed` | FreeList has been freed |
+| `ErrArenaCapacityExceeded`| Arena slice capacity exceeded |
+| `ErrSlotTooSmall` | Slot size is too small for the requested struct/slice |
 
 ## Examples
 
@@ -481,7 +485,7 @@ All allocations are **8-byte aligned** for SIMD/ARM compatibility.
 
 ### Memory hints
 
-`memory.Hint(HintWillNeed | HintDontNeed, ptr, len)` wraps `madvise(2)` for
+`memory.Hint(HintWillNeed, ptr, len)` or `memory.Hint(HintDontNeed, ptr, len)` wraps `madvise(2)` for
 cache warming or page reclaim hints. Linux uses `MADV_DONTNEED` (eager);
 macOS uses `MADV_FREE` (lazy).
 
@@ -522,11 +526,19 @@ A process-wide heap pressure monitor is available via
 ## What This Is NOT
 
 - **Not GC-safe** — memory is not zeroed on alloc/reset; caller manages contents
-- **Not thread-safe for `Arena`** — single-producer bump allocator; concurrent use causes corruption
+- **Not thread-safe for `Arena` Reset** — single-producer reset only; calling Reset concurrently with Alloc causes overlapping allocations
 - **Not a substitute for `sync.Pool`** — designed for explicit lifecycle control, not automatic GC integration
 - **Not a general-purpose allocator** — tuned for slab workloads; large allocations bypass slabs
 - **Not safe for use-after-Reset** — accessing an allocation after `Reset()` will segfault or corrupt data
 - **Not safe for use-after-Retire without Enter** — accessing a retired slot without holding an active Hyaline enter is a use-after-free bug
+
+## Theoretical Foundations
+
+This implementation bridges high-level Go concurrency with low-level systems research:
+
+- **Safe Memory Reclamation**: Based on *Hyaline: Fast and Transparent Lock-Free Memory Reclamation* (PLDI '21) by Nikolaev and Ravindran. This provides $O(1)$ reclamation and robustness against stalled goroutines, enabling our 13.8M ops/sec throughput without the frequent memory barrier overhead inherent to traditional *Hazard Pointers* (Michael, 2004).
+- **Lock-Free Primitives**: Utilizes a sharded *Treiber Stack* (1986). To resolve the ABA problem (a classic weakness of Treiber stacks in non-GC languages), 16-bit generation tags are packed into 48-bit virtual addresses. Furthermore, sharding is used to avoid the scalability bottlenecks of global stacks, a principle outlined in *A Scalable Lock-free Stack Algorithm* (Hendler, Shavit, and Yerushalmi, 2004).
+- **Adaptive Control**: Reclamation pressure is managed via a PID controller, dynamically tuning batch flush thresholds to prevent liveness stalls under extreme oversubscription, applying principles from *Feedback Control for Computer Systems* (Janert).
 
 ## Contributing
 

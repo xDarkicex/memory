@@ -19,6 +19,7 @@ var (
 	ErrFreelistFreed          = errors.New("freelist has been freed: no further allocations allowed")
 	ErrArenaCapacityExceeded  = errors.New("arena slice capacity exceeded")
 	ErrSlotTooSmall           = errors.New("slot too small: sizeof(T)+12 exceeds SlotSize")
+	ErrLA57                   = errors.New("tagged-pointer ABA scheme requires <=48-bit virtual addresses; LA57 kernel detected")
 )
 
 // PageSize is the actual system page size obtained via OS syscall.
