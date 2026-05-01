@@ -14,10 +14,18 @@ func (p *Pool) mmapSlab(slabSize uint64) ([]byte, error) {
 	return p.mmapSlabBase(slabSize)
 }
 
+// mmapSlab on Darwin always uses regular mmap (no huge page support).
+func (fl *FreeList) mmapSlab(slabSize uint64) ([]byte, error) {
+	return fl.mmapSlabBase(slabSize)
+}
+
 // Hint passes madvise hints to the Darwin kernel.
-// MADV_FREE is used in place of MADV_DONTNEED: pages are lazily reclaimable
-// under memory pressure but NOT immediately zeroed. Callers requiring
-// guaranteed zeroing after HintDontNeed must call ZeroMemory explicitly.
+//
+// Platform divergence: Darwin maps HintDontNeed to MADV_FREE (lazy reclaim
+// under memory pressure, pages may retain content until reclaimed). Linux
+// maps HintDontNeed to MADV_DONTNEED (eager page discard, next access faults
+// to zero). Callers requiring deterministic zeroing after HintDontNeed must
+// call ZeroMemory explicitly.
 func Hint(h MemoryHint, ptr unsafe.Pointer, length int) {
 	if length <= 0 {
 		return

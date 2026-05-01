@@ -77,6 +77,8 @@ func countTokens(input string) int {
 	return n
 }
 
+// tokenize uses the raw Pool API: pool.Allocate for the byte scratch buffer
+// and heap-allocated tokens slice. See tokenizeWithHelpers for the typed equivalent.
 func tokenize(pool *memory.Pool, input string) ([]token, []byte) {
 	size := uint64(len(input)) + 1024
 	data, err := pool.Allocate(size)
@@ -108,6 +110,59 @@ func tokenize(pool *memory.Pool, input string) ([]token, []byte) {
 			tokens = append(tokens, token{tokString, start, len(buf)})
 		case ' ', '\t', '\n', '\r':
 			// skip whitespace
+		default:
+			if c >= '0' && c <= '9' || c == '-' {
+				start := len(buf)
+				for i < len(inputBytes) && (inputBytes[i] >= '0' && inputBytes[i] <= '9' || inputBytes[i] == '.' || inputBytes[i] == '-') {
+					buf = append(buf, inputBytes[i])
+					i++
+				}
+				i--
+				tokens = append(tokens, token{tokNumber, start, len(buf)})
+			}
+		}
+	}
+	return tokens, buf
+}
+
+// tokenizeWithHelpers uses PoolSlice to allocate the token buffer off-heap
+// instead of make([]token, 0, 32). The byte scratch buffer still uses
+// pool.Allocate — there's no typed helper for append-style byte buffers.
+//
+// Compare with tokenize: the only difference is how tokens is allocated.
+func tokenizeWithHelpers(pool *memory.Pool, input string) ([]token, []byte) {
+	size := uint64(len(input)) + 1024
+	data, err := pool.Allocate(size)
+	if err != nil {
+		panic(err)
+	}
+	buf := data[:0]
+	inputBytes := []byte(input)
+	tokens, err := memory.PoolSlice[token](pool, 32)
+	if err != nil {
+		panic(err)
+	}
+
+	for i := 0; i < len(inputBytes); i++ {
+		c := inputBytes[i]
+		switch c {
+		case '{':
+			tokens = append(tokens, token{tokLBrace, len(buf), len(buf)})
+		case '}':
+			tokens = append(tokens, token{tokRBrace, len(buf), len(buf)})
+		case ':':
+			tokens = append(tokens, token{tokColon, len(buf), len(buf)})
+		case ',':
+			tokens = append(tokens, token{tokComma, len(buf), len(buf)})
+		case '"':
+			start := len(buf)
+			i++
+			for i < len(inputBytes) && inputBytes[i] != '"' {
+				buf = append(buf, inputBytes[i])
+				i++
+			}
+			tokens = append(tokens, token{tokString, start, len(buf)})
+		case ' ', '\t', '\n', '\r':
 		default:
 			if c >= '0' && c <= '9' || c == '-' {
 				start := len(buf)

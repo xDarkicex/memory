@@ -22,13 +22,26 @@ func newRequestPool(tb testing.TB) *memory.Pool {
 
 func TestRequestPool(t *testing.T) {
 	pool := newRequestPool(t)
-	defer pool.Reset()
+	defer pool.Free()
 
 	buf := handleRequest(pool, 42, "application/octet-stream", []byte("hello"))
 	if len(buf) == 0 {
 		t.Fatal("empty response buffer")
 	}
 	// Verify tag structure: 4 tags × (1 tag + 1 len + N value)
+	if len(buf) < 8 {
+		t.Fatalf("response too short: %d bytes", len(buf))
+	}
+}
+
+func TestRequestPoolWithHelpers(t *testing.T) {
+	pool := newRequestPool(t)
+	defer pool.Free()
+
+	buf := handleRequestWithHelpers(pool, 42, "application/octet-stream", []byte("hello"))
+	if len(buf) == 0 {
+		t.Fatal("empty response buffer")
+	}
 	if len(buf) < 8 {
 		t.Fatalf("response too short: %d bytes", len(buf))
 	}

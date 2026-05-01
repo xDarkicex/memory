@@ -22,11 +22,22 @@ func newTestPool(tb testing.TB) *memory.Pool {
 
 func TestParserScratch(t *testing.T) {
 	pool := newTestPool(t)
-	defer pool.Reset()
+	defer pool.Free()
 
 	input := `{"key":"value","num":123}`
 	tokens, _ := tokenize(pool, input)
 	if len(tokens) != 9 { // {, "key", :, "value", ,, "num", :, 123, }
+		t.Fatalf("expected 9 tokens, got %d", len(tokens))
+	}
+}
+
+func TestParserScratchWithHelpers(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Free()
+
+	input := `{"key":"value","num":123}`
+	tokens, _ := tokenizeWithHelpers(pool, input)
+	if len(tokens) != 9 {
 		t.Fatalf("expected 9 tokens, got %d", len(tokens))
 	}
 }

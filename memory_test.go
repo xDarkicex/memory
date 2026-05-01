@@ -36,7 +36,7 @@ func TestAllocateZeroSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	_, err = pool.Allocate(0)
 	if err != ErrInvalidSize {
@@ -49,7 +49,7 @@ func TestAllocateBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(64)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestPoolExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Allocate within single slab (32KB < 64KB pool)
 	_, err = pool.Allocate(16 * 1024)
@@ -291,7 +291,7 @@ func TestPoolStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	stats := pool.Stats()
 	if stats.SlabSize != cfg.SlabSize {
@@ -326,7 +326,7 @@ func TestPoolLargeAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Allocate more than slab size (large allocation)
 	data, err := pool.Allocate(2 * 1024 * 1024) // 2MB
@@ -367,7 +367,7 @@ func TestPoolPrealloc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool with Prealloc failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	stats := pool.Stats()
 	if stats.SlabCount != 2 {
@@ -406,7 +406,7 @@ func TestHintNormal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4096)
 	if err != nil {
@@ -422,7 +422,7 @@ func TestHintWillNeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4096)
 	if err != nil {
@@ -438,7 +438,7 @@ func TestHintDontNeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4096)
 	if err != nil {
@@ -454,7 +454,7 @@ func TestHintZeroLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4096)
 	if err != nil {

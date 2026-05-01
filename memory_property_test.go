@@ -23,7 +23,7 @@ func TestPoolSizeNeverExceeded(t *testing.T) {
 			t.Logf("NewPool failed: %v", err)
 			return false
 		}
-		defer pool.Reset()
+		defer pool.Free()
 
 		// Try to allocate up to PoolSize
 		allocSize := uint64(size) % (cfg.PoolSize / 2) // cap at half pool to avoid immediate exhaustion
@@ -64,18 +64,15 @@ func TestResetRestoresFullCapacity(t *testing.T) {
 			t.Logf("NewPool failed: %v", err)
 			return false
 		}
-		defer pool.Reset()
+		defer pool.Free()
 
 		allocSize := uint64(32 * 1024) // 32KB each
-		var allocs [][]byte
 
 		// Allocate multiple times
 		for i := uint8(0); i < numAllocs && i < 16; i++ {
-			data, err := pool.Allocate(allocSize)
-			if err != nil {
+			if _, err := pool.Allocate(allocSize); err != nil {
 				break
 			}
-			allocs = append(allocs, data)
 		}
 
 		statsBefore := pool.Stats()
@@ -99,12 +96,11 @@ func TestResetRestoresFullCapacity(t *testing.T) {
 		// After reset, we should be able to allocate the same total amount
 		var totalAllocated uint64
 		for i := uint8(0); i < numAllocs && i < 16; i++ {
-			data, err := pool.Allocate(allocSize)
+			_, err := pool.Allocate(allocSize)
 			if err != nil {
 				break
 			}
-			allocs = append(allocs, data)
-			totalAllocated += allocSize
+totalAllocated += allocSize
 		}
 
 		statsNew := pool.Stats()
@@ -122,7 +118,7 @@ func TestGenerationIncrementsOnReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Allocate to ensure pool is initialized
 	_, err = pool.Allocate(1024)
@@ -169,7 +165,7 @@ func TestAllocatedNeverExceedsReserved(t *testing.T) {
 			t.Logf("NewPool failed: %v", err)
 			return false
 		}
-		defer pool.Reset()
+		defer pool.Free()
 
 		allocSize := uint64(16 * 1024) // 16KB allocations
 
@@ -199,7 +195,7 @@ func TestSlabCountMonotonicIncrease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	prevCount := int32(0)
 	allocSize := uint64(32 * 1024)
@@ -261,7 +257,7 @@ func TestMultipleLargeAllocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Allocate several large objects (larger than slab size)
 	for i := 0; i < 3; i++ {
@@ -299,7 +295,7 @@ func TestConcurrentAllocNoRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	const numGoroutines = 8
 	const opsPerGoroutine = 1000
@@ -404,7 +400,7 @@ func TestPoolAlignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	for _, size := range []uint64{1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 31, 32, 33} {
 		data, err := pool.Allocate(size)
@@ -431,7 +427,7 @@ func TestReservedAccountant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Before any allocation, reserved should be 0 (lazy allocation)
 	stats := pool.Stats()
