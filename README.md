@@ -7,10 +7,16 @@
 
 Off-heap memory allocators for Go — GC-isolated, lock-free, backed by mmap.
 
-Package `memory` provides four off-heap allocator types, each for a different
-use case. Allocations are served from mmap'd slabs; the Go GC never scans this
-memory. Safe memory reclamation (SMR) for concurrent workloads is provided by
-Hyaline (PLDI 2021), a reference-counting scheme with a single-store hot path.
+Package `memory` provides four off-heap allocator types:
+
+- **`Arena`** — variable-size bump-pointer allocator (CAS, lock-free)
+- **`Pool`** — variable-size slab allocator (CAS, lock-free, bulk `Reset()`)
+- **`FreeList`** — fixed-size lock-free allocator (Treiber stack, per-object `Deallocate()`)
+- **`ShardedFreeList`** — sharded fixed-size allocator (per-shard LIFO caches + Hyaline SMR, `Deallocate()` or `Retire()`)
+
+Allocations are served from mmap'd slabs; the Go GC never scans this memory.
+Safe memory reclamation (SMR) for concurrent workloads is provided by Hyaline
+(PLDI 2021), a reference-counting scheme with a single-store hot path.
 
 ## Why use this
 
@@ -178,14 +184,46 @@ sfl.Reset()                            // bulk-free + restart PID controller
 sfl.Free()                             // release mmap + cancel PID controller
 ```
 
-### Generic helper: PoolSlice
+### Generic helpers
+
+Typed allocation helpers for every allocator — no `unsafe.Pointer` casting
+needed. All have `Must` variants that panic instead of returning an error.
 
 ```go
-// Allocate a typed slice backed by Pool. Returns len=0, cap=n.
-// Reslice to full capacity before use.
-vec, err := memory.PoolSlice[float32](pool, 1536) // 1536 float32s off-heap
+// Pool: typed single-value and slice allocation
+hdr, err := memory.PoolAlloc[Header](pool)
+vec, err := memory.PoolSlice[float32](pool, 1536)
 vec = vec[:1536] // reslice to full capacity
+
+// Arena: typed allocation + string + append
+hdr, err := memory.ArenaAlloc[Header](arena)
+vec, err := memory.ArenaSlice[float32](arena, 1536)
+s, err := memory.ArenaNewString(arena, "hello")
+vec = memory.ArenaAppend(arena, vec, 1.0, 2.0)
+
+// FreeList: typed alloc + dealloc
+hdr, err := memory.FreeListAlloc[Header](fl)
+hdr.ID = 42
+memory.FreeListDealloc(fl, hdr)
 ```
+
+| Helper | Allocator | Description |
+|--------|-----------|-------------|
+| `PoolAlloc[T](pool) *T` | Pool | Allocate a single `T` |
+| `PoolSlice[T](pool, n) []T` | Pool | Allocate `[]T` (len=0, cap=n) |
+| `MustPoolAlloc[T](pool) *T` | Pool | Panic-on-error variant |
+| `MustPoolSlice[T](pool, n) []T` | Pool | Panic-on-error variant |
+| `ArenaAlloc[T](arena) *T` | Arena | Allocate a single `T` |
+| `ArenaSlice[T](arena, n) []T` | Arena | Allocate `[]T` (len=0, cap=n) |
+| `ArenaNewString(arena, s) string` | Arena | Copy a string to the arena |
+| `ArenaAppend[T](arena, sl, elems) []T` | Arena | Append to an arena-backed slice |
+| `MustArenaAlloc[T](arena) *T` | Arena | Panic-on-error variant |
+| `MustArenaSlice[T](arena, n) []T` | Arena | Panic-on-error variant |
+| `MustArenaNewString(arena, s) string` | Arena | Panic-on-error variant |
+| `FreeListAlloc[T](fl) *T` | FreeList | Allocate a single `T` |
+| `FreeListDealloc[T](fl, *T)` | FreeList | Deallocate a `*T` |
+| `FreeListSlotFor[T](fl, *T) []byte` | FreeList | Get backing slot for `*T` |
+| `MustFreeListAlloc[T](fl) *T` | FreeList | Panic-on-error variant |
 
 ## Safety
 
