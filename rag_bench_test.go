@@ -495,3 +495,279 @@ func BenchmarkRAG_ConcurrentBuild_Make(b *testing.B) {
 		wg.Wait()
 	}
 }
+
+// --- FreeList / ShardedFreeList helpers ---
+
+func newRAGFreeList(tb testing.TB) *memory.FreeList {
+	tb.Helper()
+	fl, err := memory.NewFreeList(memory.FreeListConfig{
+		PoolSize:  256 * 1024 * 1024,
+		SlotSize:  ragSlotSize,
+		SlabSize:  2 * 1024 * 1024,
+		SlabCount: 32,
+		Prealloc:  true,
+	})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { fl.Free() })
+	return fl
+}
+
+func newRAGShardedFreeList(tb testing.TB) *memory.ShardedFreeList {
+	tb.Helper()
+	sfl, err := memory.NewShardedFreeList(memory.FreeListConfig{
+		PoolSize:  256 * 1024 * 1024,
+		SlotSize:  ragSlotSize,
+		SlabSize:  2 * 1024 * 1024,
+		SlabCount: 32,
+		Prealloc:  true,
+	}, 64)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sfl.Free() })
+	return sfl
+}
+
+func allocVectorFreeList(fl *memory.FreeList) ([]float32, error) {
+	slot, err := fl.Allocate()
+	if err != nil {
+		return nil, err
+	}
+	return unsafe.Slice((*float32)(unsafe.Pointer(unsafe.SliceData(slot))), ragDim), nil
+}
+
+func allocVectorShardedFreeList(sfl *memory.ShardedFreeList) ([]float32, error) {
+	slot, err := sfl.Allocate()
+	if err != nil {
+		return nil, err
+	}
+	return unsafe.Slice((*float32)(unsafe.Pointer(unsafe.SliceData(slot))), ragDim), nil
+}
+
+func mustAllocVectorFreeList(tb testing.TB, fl *memory.FreeList) []float32 {
+	tb.Helper()
+	vec, err := allocVectorFreeList(fl)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return vec
+}
+
+func mustAllocVectorShardedFreeList(tb testing.TB, sfl *memory.ShardedFreeList) []float32 {
+	tb.Helper()
+	vec, err := allocVectorShardedFreeList(sfl)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return vec
+}
+
+// --- FreeList / ShardedFreeList benchmarks ---
+
+func BenchmarkRAG_BuildIndex_FreeList(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		fl := newRAGFreeList(b)
+		for i := 0; i < ragIndexSize; i++ {
+			vec, _ := allocVectorFreeList(fl)
+			for j := 0; j < ragDim; j++ {
+				vec[j] = float32(i+j) * 0.0001
+			}
+		}
+		fl.Free()
+	}
+}
+
+func BenchmarkRAG_BuildIndex_ShardedFreeList(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		sfl := newRAGShardedFreeList(b)
+		for i := 0; i < ragIndexSize; i++ {
+			vec, _ := allocVectorShardedFreeList(sfl)
+			for j := 0; j < ragDim; j++ {
+				vec[j] = float32(i+j) * 0.0001
+			}
+		}
+		sfl.Free()
+	}
+}
+
+func BenchmarkRAG_Query_FreeList(b *testing.B) {
+	fl := newRAGFreeList(b)
+	vectors := make([][]float32, ragIndexSize)
+	for i := 0; i < ragIndexSize; i++ {
+		vec := mustAllocVectorFreeList(b, fl)
+		for j := 0; j < ragDim; j++ {
+			vec[j] = float32(i+j) * 0.0001
+		}
+		vectors[i] = vec
+	}
+	query := vectors[ragIndexSize/2]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		topK(query, vectors, 10)
+	}
+}
+
+func BenchmarkRAG_Query_ShardedFreeList(b *testing.B) {
+	sfl := newRAGShardedFreeList(b)
+	vectors := make([][]float32, ragIndexSize)
+	for i := 0; i < ragIndexSize; i++ {
+		vec := mustAllocVectorShardedFreeList(b, sfl)
+		for j := 0; j < ragDim; j++ {
+			vec[j] = float32(i+j) * 0.0001
+		}
+		vectors[i] = vec
+	}
+	query := vectors[ragIndexSize/2]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		topK(query, vectors, 10)
+	}
+}
+
+func BenchmarkRAG_ConcurrentQuery_FreeList(b *testing.B) {
+	fl := newRAGFreeList(b)
+	vectors := make([][]float32, ragIndexSize)
+	for i := 0; i < ragIndexSize; i++ {
+		vec := mustAllocVectorFreeList(b, fl)
+		for j := 0; j < ragDim; j++ {
+			vec[j] = float32(i+j) * 0.0001
+		}
+		vectors[i] = vec
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		query := make([]float32, ragDim)
+		for j := 0; j < ragDim; j++ {
+			query[j] = float32(j) * 0.001
+		}
+		for pb.Next() {
+			topK(query, vectors, 10)
+		}
+	})
+}
+
+func BenchmarkRAG_ConcurrentQuery_ShardedFreeList(b *testing.B) {
+	sfl := newRAGShardedFreeList(b)
+	vectors := make([][]float32, ragIndexSize)
+	for i := 0; i < ragIndexSize; i++ {
+		vec := mustAllocVectorShardedFreeList(b, sfl)
+		for j := 0; j < ragDim; j++ {
+			vec[j] = float32(i+j) * 0.0001
+		}
+		vectors[i] = vec
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		query := make([]float32, ragDim)
+		for j := 0; j < ragDim; j++ {
+			query[j] = float32(j) * 0.001
+		}
+		for pb.Next() {
+			topK(query, vectors, 10)
+		}
+	})
+}
+
+func BenchmarkRAG_PerVector_Alloc_FreeList(b *testing.B) {
+	fl, err := memory.NewFreeList(memory.FreeListConfig{
+		PoolSize:  1024 * 1024 * 1024 * 1024,
+		SlotSize:  ragSlotSize,
+		SlabSize:  2 * 1024 * 1024,
+		SlabCount: 1,
+		Prealloc:  false,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { fl.Free() })
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		vec, err := allocVectorFreeList(fl)
+		if err != nil {
+			b.Fatal(err)
+		}
+		vec[0] = 1.0
+		fl.Deallocate(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(vec))), ragSlotSize))
+	}
+}
+
+func BenchmarkRAG_PerVector_Alloc_ShardedFreeList(b *testing.B) {
+	sfl, err := memory.NewShardedFreeList(memory.FreeListConfig{
+		PoolSize:  1024 * 1024 * 1024 * 1024,
+		SlotSize:  ragSlotSize,
+		SlabSize:  2 * 1024 * 1024,
+		SlabCount: 1,
+		Prealloc:  false,
+	}, 64)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { sfl.Free() })
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		vec, err := allocVectorShardedFreeList(sfl)
+		if err != nil {
+			b.Fatal(err)
+		}
+		vec[0] = 1.0
+		sfl.Deallocate(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(vec))), ragSlotSize))
+	}
+}
+
+func BenchmarkRAG_ConcurrentBuild_FreeList(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fl := newRAGFreeList(b)
+		var wg sync.WaitGroup
+		perG := ragIndexSize / 8
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < perG; i++ {
+					vec, _ := allocVectorFreeList(fl)
+					vec[0] = float32(i)
+				}
+			}()
+		}
+		wg.Wait()
+		fl.Free()
+	}
+}
+
+func BenchmarkRAG_ConcurrentBuild_ShardedFreeList(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		sfl := newRAGShardedFreeList(b)
+		var wg sync.WaitGroup
+		perG := ragIndexSize / 8
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < perG; i++ {
+					vec, _ := allocVectorShardedFreeList(sfl)
+					vec[0] = float32(i)
+				}
+			}()
+		}
+		wg.Wait()
+		sfl.Free()
+	}
+}

@@ -58,8 +58,12 @@ Platform-specific code uses Go build tags:
 
 ### Slot metadata protocol (FreeList / ShardedFreeList)
 
-Each free slot stores two things:
-- **Offset 0**: next pointer (for intrusive Treiber stack)
-- **Offset 8**: packed uint32 — `bits[0:24]` = slab struct index, `bits[24:32]` = home shard index (ShardedFreeList only)
+Each free slot stores:
+- **Offset 0**: next pointer (for intrusive Treiber stack / Hyaline node chain)
+- **Offset 8**: batch_link (Hyaline: link to batch head for reference counting)
+- **Offset 16**: refs (on batch head) / batch_next (on other nodes) — Hyaline reclamation
+- **Offset 24**: packed uint32 — `bits[0:24]` = slab struct index, `bits[24:32]` = home shard index (ShardedFreeList only)
 
-`pushFree` writes the metadata; `Allocate` reads structIdx from it to resolve the owning slab without locks or binary search. `Deallocate` uses O(log N) binary search over `slabBase` (sorted by mmap base address).
+Total overhead: 28 bytes (padded to 32 for alignment). Minimum SlotSize: 32.
+
+`pushFree` writes the metadata; `Allocate` reads structIdx from offset 24 to resolve the owning slab without locks or binary search. `Deallocate` uses O(log N) binary search over `slabBase` (sorted by mmap base address) as a fallback when offset 24 metadata is corrupted.

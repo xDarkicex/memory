@@ -870,9 +870,9 @@ func BenchmarkShardedHotPath(b *testing.B) {
 	_ = sink
 }
 
-// BenchmarkShardedHotPathHP measures single-goroutine throughput with the
-// hazard-pointer path: Protect, touch, Unprotect, Retire (no Deallocate).
-func BenchmarkShardedHotPathHP(b *testing.B) {
+// BenchmarkShardedHotPathHyaline measures single-goroutine throughput with the
+// Hyaline SMR path: Enter, touch, Leave, Retire.
+func BenchmarkShardedHotPathHyaline(b *testing.B) {
 	cfg := DefaultFreeListConfig()
 	cfg.PoolSize = 256 * 1024 * 1024
 	cfg.SlotSize = 64
@@ -891,17 +891,15 @@ func BenchmarkShardedHotPathHP(b *testing.B) {
 	var sink byte
 	b.ResetTimer()
 
+	shardIdx := 0
 	for i := 0; i < b.N; i++ {
 		slot, err := sfl.Allocate()
 		if err != nil {
 			b.Fatal(err)
 		}
-		guard, ok := sfl.Protect(slot)
-		if !ok {
-			b.Fatal("Protect exhausted")
-		}
+		sfl.HyalineEnter(shardIdx)
 		sink = slot[0]
-		sfl.Unprotect(guard)
+		sfl.HyalineLeave(shardIdx)
 
 		if err := sfl.Retire(slot); err != nil {
 			b.Fatal(err)
@@ -946,20 +944,12 @@ func BenchmarkShardedConcurrent(b *testing.B) {
 	})
 }
 
-// BenchmarkShardedConcurrentHP measures ShardedFreeList throughput with the
-// full hazard-pointer path (Protect/Unprotect + Retire) under concurrency.
-// Uses a retry loop for Protect exhaustion (K=2 per shard can fill up under
-// hash-based sharding when multiple goroutines collide on the same shard).
-func BenchmarkShardedConcurrentHP(b *testing.B) {
+// BenchmarkShardedConcurrentHyaline measures ShardedFreeList throughput with the
+// full Hyaline SMR path (Enter/Leave + Retire) under concurrency.
+func BenchmarkShardedConcurrentHyaline(b *testing.B) {
 	cfg := DefaultFreeListConfig()
-	cfg.PoolSize = 256 * 1024 * 1024
-	cfg.SlotSize = 64
-	cfg.SlabSize = 1024 * 1024
-	cfg.Prealloc = true
-
-	// Use larger pool for concurrent HP — Protect/Retire path keeps slots in
-	// retirement lists, and concurrent scans can race, causing transient exhaustion.
 	cfg.PoolSize = 512 * 1024 * 1024
+	cfg.SlotSize = 64
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
@@ -974,6 +964,7 @@ func BenchmarkShardedConcurrentHP(b *testing.B) {
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
+		shardIdx := int(fastrand()) & (sfl.numShards - 1)
 		for pb.Next() {
 			slot, err := sfl.Allocate()
 			if err != nil {
@@ -981,17 +972,9 @@ func BenchmarkShardedConcurrentHP(b *testing.B) {
 				return
 			}
 
-			// Retry until we get a hazard slot (hash collisions may exhaust K=2).
-			var guard HazardGuard
-			for {
-				var ok bool
-				guard, ok = sfl.Protect(slot)
-				if ok {
-					break
-				}
-			}
+			sfl.HyalineEnter(shardIdx)
 			_ = slot[0]
-			sfl.Unprotect(guard)
+			sfl.HyalineLeave(shardIdx)
 
 			if err := sfl.Retire(slot); err != nil {
 				b.Errorf("Retire failed: %v", err)
@@ -1060,11 +1043,10 @@ func BenchmarkShardedCrossShard(b *testing.B) {
 	wg.Wait()
 }
 
-// BenchmarkShardedScanOverhead measures the cost of the hazard pointer scan
-// at steady state. Slots are allocated, retired (not deallocated), forcing
-// the allocator to trigger scan under backpressure to reclaim memory.
-// This measures throughput with amortized scan cost included.
-func BenchmarkShardedScanOverhead(b *testing.B) {
+// BenchmarkShardedRetireReclaim measures the cost of Hyaline retire/reclaim
+// at steady state. Slots are allocated and retired (not deallocated), forcing
+// the allocator to reclaim via Hyaline leave under backpressure.
+func BenchmarkShardedRetireReclaim(b *testing.B) {
 	cfg := DefaultFreeListConfig()
 	cfg.PoolSize = 4 * 1024 * 1024 // Small pool to force frequent scans
 	cfg.SlotSize = 64
@@ -1090,8 +1072,8 @@ func BenchmarkShardedScanOverhead(b *testing.B) {
 		}
 		sink = slot[0]
 
-		// Retire (not Deallocate) — slots go to retirement list.
-		// When the global FreeList empties, scan reclaims them.
+		// Retire (not Deallocate) — slots go to Hyaline batch.
+		// Reclamation happens during HyalineLeave or batch flush.
 		if err := sfl.Retire(slot); err != nil {
 			b.Fatal(err)
 		}

@@ -67,15 +67,12 @@ func TestResetRestoresFullCapacity(t *testing.T) {
 		defer pool.Free()
 
 		allocSize := uint64(32 * 1024) // 32KB each
-		var allocs [][]byte
 
 		// Allocate multiple times
 		for i := uint8(0); i < numAllocs && i < 16; i++ {
-			data, err := pool.Allocate(allocSize)
-			if err != nil {
+			if _, err := pool.Allocate(allocSize); err != nil {
 				break
 			}
-			allocs = append(allocs, data)
 		}
 
 		statsBefore := pool.Stats()
@@ -99,12 +96,11 @@ func TestResetRestoresFullCapacity(t *testing.T) {
 		// After reset, we should be able to allocate the same total amount
 		var totalAllocated uint64
 		for i := uint8(0); i < numAllocs && i < 16; i++ {
-			data, err := pool.Allocate(allocSize)
+			_, err := pool.Allocate(allocSize)
 			if err != nil {
 				break
 			}
-			allocs = append(allocs, data)
-			totalAllocated += allocSize
+totalAllocated += allocSize
 		}
 
 		statsNew := pool.Stats()

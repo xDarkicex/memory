@@ -111,8 +111,8 @@ func TestFreeListAlloc_SlotFor(t *testing.T) {
 
 	// Verify the slot header is intact — offset 0 should have the Treiber link.
 	// After allocation, offset 0 is undefined (was last free-list link),
-	// but we can verify the metadata at offset 8 is valid.
-	meta := *(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 8))
+	// but we can verify the metadata at offset 24 is valid.
+	meta := *(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 24))
 	structIdx := unpackStructIdx(meta)
 	if structIdx == 0 && meta == 0 {
 		// structIdx can be 0 (first slab). Zero meta means something is wrong.

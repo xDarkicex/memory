@@ -52,7 +52,7 @@ type FreeListConfig struct {
 	// PoolSize is the hard limit on total mmap'd bytes.
 	PoolSize uint64
 	// SlotSize is the fixed size of each allocation slot.
-	// Must be >= 16 (8 for intrusive next pointer + 4 for struct index).
+	// Must be >= 32 (8 next + 8 batch_link + 8 refs/batch_next + 4 structIdx + padding).
 	SlotSize uint64
 	// SlabSize is the size of each mmap'd slab region.
 	// Should be a multiple of SlotSize for zero waste; defaults to 1MB.
@@ -89,7 +89,7 @@ type slabEntry struct {
 //
 // Slots are threaded into an intrusive singly-linked free list. Each free
 // slot stores the next pointer at offset 0 and the owning slab's struct
-// index at offset 8. The head pointer is a tagged uint64 encoding
+// index at offset 24. The head pointer is a tagged uint64 encoding
 // (generation << 48) | pointer for ABA protection on CAS.
 // Allocate pops the head; Deallocate pushes back. When the free list is
 // empty, a new slab is mmap'd.
@@ -151,8 +151,8 @@ type freelistSlab struct {
 
 // NewFreeList creates a new fixed-size freelist allocator.
 func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
-	if cfg.SlotSize < 16 {
-		cfg.SlotSize = 16
+	if cfg.SlotSize < 32 {
+		cfg.SlotSize = 32
 	}
 	if cfg.SlabSize == 0 {
 		cfg.SlabSize = 1024 * 1024
@@ -346,17 +346,15 @@ func unpackTag(tagged uint64) uint16 {
 	return uint16(tagged >> tagShift)
 }
 
-// Slot metadata packing at offset 8:
+// Slot metadata packing at offset 24:
 //   bits  0-23: structIdx (up to 16M slabs)
 //   bits 24-31: homeShard (up to 256 shards)
 func packSlotMeta(structIdx int32, homeShard uint8) uint32 {
 	return uint32(structIdx) | (uint32(homeShard) << 24)
 }
 func unpackStructIdx(meta uint32) int32  { return int32(meta & 0x00FFFFFF) }
-func unpackHomeShard(meta uint32) uint8  { return uint8(meta >> 24) }
-
 // pushFree pushes a slot onto the free list. structIdx is the slab's index
-// in slabStructs, embedded at slot offset 8 as packed metadata so Allocate
+// in slabStructs, embedded at slot offset 24 as packed metadata so Allocate
 // can resolve it without a lock or binary search.
 func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 	for {
@@ -364,7 +362,7 @@ func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 		newTag := unpackTag(old) + 1
 
 		atomic.StoreUint64((*uint64)(ptr), uint64(uintptr(unpackPtr(old))))
-		*(*uint32)(unsafe.Add(ptr, 8)) = packSlotMeta(structIdx, 0)
+		*(*uint32)(unsafe.Add(ptr, 24)) = packSlotMeta(structIdx, 0)
 
 		newTagged := packTaggedPtr(ptr, newTag)
 		if fl.head.CompareAndSwap(old, newTagged) {
@@ -460,7 +458,7 @@ func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
 
 		for i := 0; i < count; i++ {
 			ptr := batch[i]
-			meta := *(*uint32)(unsafe.Add(ptr, 8))
+			meta := *(*uint32)(unsafe.Add(ptr, 24))
 			structIdx := int(unpackStructIdx(meta))
 			base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
 			si := fl.slotIndex(ptr, base, structIdx)
@@ -512,7 +510,7 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 
 		// structIdx is embedded in the slot at offset 8 by pushFree.
 		// Read it directly — no lock, no binary search.
-		meta := *(*uint32)(unsafe.Add(ptr, 8))
+		meta := *(*uint32)(unsafe.Add(ptr, 24))
 			structIdx := int(unpackStructIdx(meta))
 		base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
 
@@ -541,7 +539,7 @@ func (fl *FreeList) Deallocate(slot []byte) error {
 	var structIdx int
 	var base uintptr
 	fastPathOK := false
-	if meta := *(*uint32)(unsafe.Add(ptr, 8)); int(unpackStructIdx(meta)) >= 0 && int(unpackStructIdx(meta)) < len(fl.slabStructs) {
+	if meta := *(*uint32)(unsafe.Add(ptr, 24)); int(unpackStructIdx(meta)) >= 0 && int(unpackStructIdx(meta)) < len(fl.slabStructs) {
 		si := int(unpackStructIdx(meta))
 		b := uintptr(unsafe.Pointer(&fl.slabStructs[si].data[0]))
 		off := uintptr(ptr) - b

@@ -204,6 +204,63 @@ tracked by runtime) and during infrequent scan drain operations.
 
 ---
 
+## 5.3 — Hyaline SMR Stress Hammer (Extreme Contention)
+
+**Setup:** `ShardedFreeList`, 128MB pool, 128B slots, 32 slabs × 4MB, Prealloc.
+**256 shards** (extreme over-provisioning). Workers = GOMAXPROCS × 32 = **256 goroutines**
+hammering 5 mixed roles (bounce, retire/Hyaline, reader, publisher, burst).
+
+### Summary (all runs, zero corruption on all)
+
+| Run | Total ops | Avg ops/sec | Errors | Rate | Recovery | Notable |
+|-----|-----------|-------------|--------|------|----------|---------|
+| 30s | 415M | **13.84M** | 3.66M | 0.88% | 10K/10K | Steady climb 12.3→13.9M |
+| 60s | 789M | **13.14M** | 7.87M | 1.0% | 10K/10K | Flat 13.1-13.4M, no drift |
+| 5m | 3.74B | **12.48M** | 40.1M | 1.07% | 10K/10K | Transient exhaustion at 4m44s, self-recovered |
+
+### Per-second breakdown (30s / 60s runs)
+
+| Time | 30s run | 60s run | corrupt |
+|------|---------|---------|---------|
+| 1s | 12.3M | 12.7M | 0 |
+| 5s | — | 12.5M | 0 |
+| 10s | 13.7M | 13.4M | 0 |
+| 20s | 13.9M | 13.6M | 0 |
+| 30s | 13.8M | 13.3M | 0 |
+| 40s | — | 13.3M | 0 |
+| 50s | — | 13.2M | 0 |
+| 60s | — | 13.1M | 0 |
+
+### 5-minute run — per-minute throughput
+
+| Minute | ops/sec range | Total ops | Errors | corrupt |
+|--------|--------------|-----------|--------|---------|
+| 1 | 12.7–13.6M | 787M | 7.89M | 0 |
+| 2 | 12.9–13.0M | 777M | 8.27M | 0 |
+| 3 | 12.8–13.0M | 769M | 8.00M | 0 |
+| 4 | 12.7–12.8M | 763M | 7.94M | 0 |
+| 5 | 12.5–12.7M | 648M | 7.92M | 0 |
+
+**Notes:** Throughput stable at 12.5–13.9M across all runs. Error rate (~1%)
+is expected exhaustion under 256× oversubscription — every error is a clean
+`ErrPoolExhausted` return, not a panic or deadlock.
+
+**Transient exhaustion event at 4m44s (5-minute run):** throughput dipped to
+12.5M and errors froze for ~6s as the pool hit empty — the Hyaline reclamation
+pipeline momentarily fell behind 256× oversubscription. The allocator
+self-recovered without intervention, throughput returned to ~12.48M, and
+post-hammer recovery passed 10K/10K. No corruption.
+
+**Key invariants validated:**
+- Zero data corruption (slot magic round-trip) over **3.74 billion** ops
+- Hyaline protect/retire integrity under concurrent readers + reclamation
+- Arena publisher slot write → publish → read consistency
+- Pool exhaustion → recovery cycle (transient exhaustion at T+284s, self-cleared)
+- 256-shard extreme over-provisioning causes no regression
+- Sustained throughput with zero degradation over 60s
+
+---
+
 ## 5.1 / 5.2 — Platform Comparison
 
 | Platform | Hot ns/op (Dealloc) | Hot ns/op (HP) | Concurrent 8-core ns/op | Notes |

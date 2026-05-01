@@ -189,7 +189,7 @@ func TestArenaAppend_PanicsOnOverflow(t *testing.T) {
 
 	nums := MustArenaSlice[int](arena, 2)
 	nums = ArenaAppend(arena, nums, 1, 2)
-	nums = ArenaAppend(arena, nums, 3)
+	_ = ArenaAppend(arena, nums, 3)
 }
 
 func TestArenaAppend_ZeroElems(t *testing.T) {
