@@ -88,3 +88,27 @@ func appendTLV(buf []byte, tag byte, value []byte) []byte {
 	buf = append(buf, byte(len(value)))
 	return append(buf, value...)
 }
+
+// handleRequestWithHelpers uses PoolSlice[byte] for the response buffer
+// instead of pool.Allocate(4096) + data[:0]. PoolSlice returns len=0, cap=4096
+// — a perfect append target. The result is identical, minus the error check.
+func handleRequestWithHelpers(pool *memory.Pool, reqID uint64, contentType string, body []byte) []byte {
+	buf, err := memory.PoolSlice[byte](pool, 4096)
+	if err != nil {
+		panic(err)
+	}
+
+	buf = appendTLV(buf, tagStatusCode, []byte{0xC8, 0x00})
+
+	cl := make([]byte, 8)
+	binary.LittleEndian.PutUint64(cl, uint64(len(body)))
+	buf = appendTLV(buf, tagContentLen, cl)
+
+	buf = appendTLV(buf, tagBody, body)
+
+	rid := make([]byte, 8)
+	binary.LittleEndian.PutUint64(rid, reqID)
+	buf = appendTLV(buf, tagRequestID, rid)
+
+	return buf
+}

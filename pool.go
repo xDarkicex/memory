@@ -3,7 +3,7 @@
 // Pool serves variable-size off-heap allocations from mmap'd slabs via
 // lock-free CAS on the hot path. Small allocations (≤ SlabSize) use
 // per-slab CAS; large allocations get dedicated mmap'd regions.
-// All memory is freed together with Reset().
+// Reset() unmaps and reinitializes for reuse; Free() permanently destroys.
 //
 // Zero heap allocations after NewPool.
 
@@ -47,6 +47,8 @@ type Pool struct {
 	growMu sync.Mutex
 	// Generation counter for Reset safety
 	generation atomic.Uint64
+	// Freed prevents use after Free()
+	freed atomic.Bool
 	// Slab size and alignment
 	align     uint64
 	alignMask uint64
@@ -171,6 +173,9 @@ func (p *Pool) reserve(size uint64) bool {
 // Returns nil slice and ErrPoolExhausted if pool cannot expand.
 // Hot path: O(1) via CAS on hot slab, no global locks.
 func (p *Pool) Allocate(size uint64) ([]byte, error) {
+	if p.freed.Load() {
+		return nil, ErrPoolFreed
+	}
 	if size == 0 {
 		return nil, ErrInvalidSize
 	}
@@ -387,13 +392,27 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 	return data, nil
 }
 
-// Reset releases all mmap'd memory and reinitializes the pool.
+// Reset releases all in-flight allocations and reinitializes the pool.
+// Backing memory is unmapped; subsequent allocations will mmap fresh slabs.
+// The pool remains usable after Reset.
+//
 // WARNING: All outstanding allocations become invalid.
 // Caller must ensure quiescence: no concurrent Allocate calls should be in flight.
 // Generation counter catches stragglers still in their CAS retry loop.
-// Note: Munmap errors are intentionally ignored — mappings are released
-// on best-effort basis and will be reclaimed by the OS on process exit.
 func (p *Pool) Reset() {
+	p.release()
+}
+
+// Free releases all mmap'd memory and marks the pool as freed.
+// The pool must not be used after Free — all subsequent Allocate calls
+// will return ErrPoolFreed.
+func (p *Pool) Free() {
+	p.release()
+	p.freed.Store(true)
+}
+
+// release unmaps all slabs and resets accounting state.
+func (p *Pool) release() {
 	// Increment generation - allocators will retry on old slabs
 	p.generation.Add(1)
 
@@ -420,7 +439,7 @@ func (p *Pool) Reset() {
 	p.reserved.Store(0)
 	p.allocated.Store(0)
 	p.committed.Store(0)
-	p.peak.Store(0) // Clear peak tracking
+	p.peak.Store(0)
 	p.cursor.Store(-1)
 
 	p.slabLen.Store(0)

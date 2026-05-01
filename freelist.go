@@ -115,6 +115,9 @@ type FreeList struct {
 	casRetries atomic.Uint64
 	_          [56]byte
 
+	// Freed prevents use after Free(). Cold path — checked once per Allocate.
+	freed atomic.Bool
+
 	// Cold path: reserved is only touched on growSlab/Reset/Free.
 	reserved atomic.Uint64
 
@@ -343,16 +346,25 @@ func unpackTag(tagged uint64) uint16 {
 	return uint16(tagged >> tagShift)
 }
 
+// Slot metadata packing at offset 8:
+//   bits  0-23: structIdx (up to 16M slabs)
+//   bits 24-31: homeShard (up to 256 shards)
+func packSlotMeta(structIdx int32, homeShard uint8) uint32 {
+	return uint32(structIdx) | (uint32(homeShard) << 24)
+}
+func unpackStructIdx(meta uint32) int32  { return int32(meta & 0x00FFFFFF) }
+func unpackHomeShard(meta uint32) uint8  { return uint8(meta >> 24) }
+
 // pushFree pushes a slot onto the free list. structIdx is the slab's index
-// in slabStructs, embedded at slot offset 8 so Allocate can resolve it
-// without a lock or binary search.
+// in slabStructs, embedded at slot offset 8 as packed metadata so Allocate
+// can resolve it without a lock or binary search.
 func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 	for {
 		old := fl.head.Load()
 		newTag := unpackTag(old) + 1
 
-		atomic.StorePointer((*unsafe.Pointer)(ptr), unpackPtr(old))
-		*(*int32)(unsafe.Add(ptr, 8)) = structIdx
+		atomic.StoreUint64((*uint64)(ptr), uint64(uintptr(unpackPtr(old))))
+		*(*uint32)(unsafe.Add(ptr, 8)) = packSlotMeta(structIdx, 0)
 
 		newTagged := packTaggedPtr(ptr, newTag)
 		if fl.head.CompareAndSwap(old, newTagged) {
@@ -378,7 +390,7 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 		}
 		newTag := unpackTag(old) + 1
 
-		next := atomic.LoadPointer((*unsafe.Pointer)(ptr))
+		next := unsafe.Pointer(uintptr(atomic.LoadUint64((*uint64)(ptr))))
 
 		newTagged := packTaggedPtr(next, newTag)
 		if fl.head.CompareAndSwap(old, newTagged) {
@@ -388,41 +400,21 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 	}
 }
 
-// batchPop pops up to len(buf) raw pointers from the freelist with a single CAS.
+// batchPop pops up to len(buf) raw pointers from the freelist.
+// Each pop is an independent atomic CAS — safe under concurrent push/pop
+// because popFree's ABA-tagged CAS guarantees exclusive ownership of the
+// popped node before its next pointer is read.
 // No bookkeeping (no slotGen, no allocated) — caller must handle it.
 // Prefer BatchAllocate for external use.
 func (fl *FreeList) batchPop(buf []unsafe.Pointer) int {
-	if len(buf) == 0 {
-		return 0
-	}
-	for {
-		old := fl.head.Load()
-		ptr := unpackPtr(old)
+	for i := 0; i < len(buf); i++ {
+		ptr := fl.popFree()
 		if ptr == nil {
-			return 0
+			return i
 		}
-		newTag := unpackTag(old) + 1
-
-		buf[0] = ptr
-		current := ptr
-		n := 1
-		for n < len(buf) {
-			next := atomic.LoadPointer((*unsafe.Pointer)(current))
-			if next == nil {
-				break
-			}
-			buf[n] = next
-			current = next
-			n++
-		}
-
-		tailNext := atomic.LoadPointer((*unsafe.Pointer)(current))
-		newTagged := packTaggedPtr(tailNext, newTag)
-		if fl.head.CompareAndSwap(old, newTagged) {
-			return n
-		}
-		fl.casRetries.Add(1)
+		buf[i] = ptr
 	}
+	return len(buf)
 }
 
 // BatchAllocate pops up to len(slots) off-heap memory slots with a single CAS.
@@ -468,7 +460,8 @@ func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
 
 		for i := 0; i < count; i++ {
 			ptr := batch[i]
-			structIdx := int(*(*int32)(unsafe.Add(ptr, 8)))
+			meta := *(*uint32)(unsafe.Add(ptr, 8))
+			structIdx := int(unpackStructIdx(meta))
 			base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
 			si := fl.slotIndex(ptr, base, structIdx)
 			// Distribute sequence numbers: slot i gets lastSeq - (count-1-i).
@@ -496,6 +489,9 @@ func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) u
 // to resolve the slab without a lock or binary search. This keeps the hot
 // path lock-free and independent of slab count.
 func (fl *FreeList) Allocate() ([]byte, error) {
+	if fl.freed.Load() {
+		return nil, ErrFreelistFreed
+	}
 	gen := fl.generation.Load()
 
 	for {
@@ -516,7 +512,8 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 
 		// structIdx is embedded in the slot at offset 8 by pushFree.
 		// Read it directly — no lock, no binary search.
-		structIdx := int(*(*int32)(unsafe.Add(ptr, 8)))
+		meta := *(*uint32)(unsafe.Add(ptr, 8))
+			structIdx := int(unpackStructIdx(meta))
 		base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
 
 		slotSize := fl.cfg.SlotSize
@@ -538,17 +535,37 @@ func (fl *FreeList) Deallocate(slot []byte) error {
 
 	ptr := unsafe.Pointer(unsafe.SliceData(slot))
 
-	fl.slabMu.RLock()
-	defer fl.slabMu.RUnlock()
+	// Fast path: read structIdx from slot metadata at offset 8.
+	// Same field that pushFree writes and Allocate reads. Callers that
+	// don't overwrite the metadata region get O(1) lock-free deallocation.
+	var structIdx int
+	var base uintptr
+	fastPathOK := false
+	if meta := *(*uint32)(unsafe.Add(ptr, 8)); int(unpackStructIdx(meta)) >= 0 && int(unpackStructIdx(meta)) < len(fl.slabStructs) {
+		si := int(unpackStructIdx(meta))
+		b := uintptr(unsafe.Pointer(&fl.slabStructs[si].data[0]))
+		off := uintptr(ptr) - b
+		if off < uintptr(fl.cfg.SlabSize) && off%uintptr(fl.cfg.SlotSize) == 0 {
+			structIdx = si
+			base = b
+			fastPathOK = true
+		}
+	}
 
-	structIdx, base := fl.findSlabIdxLocked(ptr)
-	if structIdx < 0 {
-		return ErrInvalidDeallocation
+	if !fastPathOK {
+		// Slow path: metadata was overwritten by the caller. Fall back to
+		// O(log N) binary search under the slab mutex.
+		fl.slabMu.RLock()
+		structIdx, base = fl.findSlabIdxLocked(ptr)
+		fl.slabMu.RUnlock()
+		if structIdx < 0 {
+			return ErrInvalidDeallocation
+		}
 	}
 
 	// Double-free detection: check that the slot has a non-zero generation.
-	si := fl.slotIndex(ptr, base, structIdx)
-	if fl.slotGen[si].Swap(0) == 0 {
+	slotIdx := fl.slotIndex(ptr, base, structIdx)
+	if fl.slotGen[slotIdx].Swap(0) == 0 {
 		return ErrDoubleDeallocation
 	}
 
@@ -571,7 +588,7 @@ func (fl *FreeList) Deallocate(slot []byte) error {
 
 // findSlabIdxLocked performs O(log N) binary search over slabBase.
 // Returns the struct index and slab base address, or (-1, 0) if not found.
-// Caller must hold slabMu (RLock or Lock).
+// DEPRECATED: Deallocate now reads structIdx directly from slot metadata.
 func (fl *FreeList) findSlabIdxLocked(ptr unsafe.Pointer) (structIdx int, base uintptr) {
 	p := uintptr(ptr)
 	n := int(fl.slabLen.Load())
@@ -674,6 +691,7 @@ func (fl *FreeList) Free() error {
 	fl.allocSeq.Store(0)
 	fl.reserved.Store(0)
 	fl.allocated.Store(0)
+	fl.freed.Store(true)
 	return nil
 }
 

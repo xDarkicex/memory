@@ -21,3 +21,10 @@
 .DS_Store
 Thumbs.db
 research.md
+
+# Memory profiles
+*.memprof
+*.pprof
+cpu.prof
+mem.prof
+heap.prof

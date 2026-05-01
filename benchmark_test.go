@@ -54,7 +54,7 @@ func BenchmarkPoolAllocateHotPath(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	benchmarkAllocBatch(b, pool, 64, 1000)
 }
@@ -71,7 +71,7 @@ func BenchmarkPoolAllocateSlowPath(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Fill first slab to force slow-path scanning (200KB used, ~56KB remaining)
 	_, err = pool.Allocate(200 * 1024)
@@ -94,7 +94,7 @@ func BenchmarkPoolAllocateGrowPath(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	benchmarkAllocBatch(b, pool, 256*1024, 50) // 50 × 256KB = 12.8MB per batch
 }
@@ -110,7 +110,7 @@ func BenchmarkPoolResetDuration(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Pre-fill to create all slabs
 	for i := 0; i < 64; i++ {
@@ -309,7 +309,7 @@ func BenchmarkLargeAllocation(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	benchmarkAllocBatch(b, pool, 1024*1024, 100) // 100 × 1MB = 100MB per batch
 }
@@ -320,7 +320,7 @@ func BenchmarkHintWillNeed(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4 * 1024 * 1024)
 	if err != nil {
@@ -342,7 +342,7 @@ func BenchmarkHintDontNeed(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4 * 1024 * 1024)
 	if err != nil {
@@ -376,7 +376,7 @@ func BenchmarkConcurrentAlloc(b *testing.B) {
 		if err != nil {
 			b.Fatalf("NewPool failed: %v", err)
 		}
-		defer pool.Reset()
+		defer pool.Free()
 
 		var sink byte
 		allocCount := 0
@@ -414,7 +414,7 @@ func BenchmarkConcurrentAllocShared(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	var sink byte
 	b.ReportAllocs()
@@ -458,7 +458,7 @@ func BenchmarkZeroMemory(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	data, err := pool.Allocate(4 * 1024 * 1024)
 	if err != nil {
@@ -485,7 +485,7 @@ func BenchmarkStatsRead(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	// Allocate to have stats to read
 	for i := 0; i < 100; i++ {
@@ -510,7 +510,7 @@ func BenchmarkSmallAllocVariedSizes(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	sizes := []uint64{16, 32, 64, 128, 256, 512, 1024, 2048, 4096}
 	// Worst case: 1000 × 4096 = 4MB per batch, well within 128MB pool
@@ -548,7 +548,7 @@ func BenchmarkGoHeapUsed(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
-	defer pool.Reset()
+	defer pool.Free()
 
 	var m0, m1 runtime.MemStats
 	runtime.ReadMemStats(&m0)
@@ -829,4 +829,449 @@ func BenchmarkCrossShardWorkStealing(b *testing.B) {
 		// With work-stealing, cross-shard frees approach 100%.
 		b.ReportMetric(100.0, "cross-pct")
 	}
+}
+
+// === Phase 4 — ShardedFreeList Benchmarks ===
+
+// BenchmarkShardedHotPath measures single-goroutine alloc+free throughput
+// through the sharded path. Both Allocate and Deallocate should hit the
+// per-shard caches (fresh/recycled) with zero atomics on the hot path.
+func BenchmarkShardedHotPath(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 8)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+
+	var sink byte
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		slot, err := sfl.Allocate()
+		if err != nil {
+			b.Fatal(err)
+		}
+		sink = slot[0]
+		slot[len(slot)-1] = sink
+
+		if err := sfl.Deallocate(slot); err != nil {
+			b.Fatal(err)
+		}
+	}
+	_ = sink
+}
+
+// BenchmarkShardedHotPathHP measures single-goroutine throughput with the
+// hazard-pointer path: Protect, touch, Unprotect, Retire (no Deallocate).
+func BenchmarkShardedHotPathHP(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 8)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+
+	var sink byte
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		slot, err := sfl.Allocate()
+		if err != nil {
+			b.Fatal(err)
+		}
+		guard, ok := sfl.Protect(slot)
+		if !ok {
+			b.Fatal("Protect exhausted")
+		}
+		sink = slot[0]
+		sfl.Unprotect(guard)
+
+		if err := sfl.Retire(slot); err != nil {
+			b.Fatal(err)
+		}
+	}
+	_ = sink
+}
+
+// BenchmarkShardedConcurrent measures ShardedFreeList throughput scaling
+// under increasing concurrency. Run with -cpu=1,2,4,8,16,32,64.
+// Compare against BenchmarkFreeListContention to quantify sharding improvement.
+func BenchmarkShardedConcurrent(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 8)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			slot, err := sfl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+			slot[0] = 42
+			if err := sfl.Deallocate(slot); err != nil {
+				b.Errorf("Deallocate failed: %v", err)
+				return
+			}
+		}
+	})
+}
+
+// BenchmarkShardedConcurrentHP measures ShardedFreeList throughput with the
+// full hazard-pointer path (Protect/Unprotect + Retire) under concurrency.
+// Uses a retry loop for Protect exhaustion (K=2 per shard can fill up under
+// hash-based sharding when multiple goroutines collide on the same shard).
+func BenchmarkShardedConcurrentHP(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	// Use larger pool for concurrent HP — Protect/Retire path keeps slots in
+	// retirement lists, and concurrent scans can race, causing transient exhaustion.
+	cfg.PoolSize = 512 * 1024 * 1024
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 16)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			slot, err := sfl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+
+			// Retry until we get a hazard slot (hash collisions may exhaust K=2).
+			var guard HazardGuard
+			for {
+				var ok bool
+				guard, ok = sfl.Protect(slot)
+				if ok {
+					break
+				}
+			}
+			_ = slot[0]
+			sfl.Unprotect(guard)
+
+			if err := sfl.Retire(slot); err != nil {
+				b.Errorf("Retire failed: %v", err)
+				return
+			}
+		}
+	})
+}
+
+// BenchmarkShardedCrossShard forces cross-shard deallocation via channel
+// handoff. Producers allocate and send slots to consumers, who deallocate
+// on a different goroutine (and likely a different shard). Measures
+// throughput under the worst-case cache-remote pattern.
+func BenchmarkShardedCrossShard(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 8)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	type item struct {
+		slot []byte
+	}
+
+	const chanDepth = 256
+	ch := make(chan item, chanDepth)
+
+	// Consumer goroutines: receive and Deallocate.
+	const numConsumers = 2
+	var wg sync.WaitGroup
+	for range numConsumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for it := range ch {
+				if err := sfl.Deallocate(it.slot); err != nil {
+					b.Errorf("Deallocate failed: %v", err)
+				}
+			}
+		}()
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			slot, err := sfl.Allocate()
+			if err != nil {
+				b.Errorf("Allocate failed: %v", err)
+				return
+			}
+			slot[0] = 42
+			ch <- item{slot}
+		}
+	})
+
+	close(ch)
+	wg.Wait()
+}
+
+// BenchmarkShardedScanOverhead measures the cost of the hazard pointer scan
+// at steady state. Slots are allocated, retired (not deallocated), forcing
+// the allocator to trigger scan under backpressure to reclaim memory.
+// This measures throughput with amortized scan cost included.
+func BenchmarkShardedScanOverhead(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 4 * 1024 * 1024 // Small pool to force frequent scans
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+
+	var sink byte
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		slot, err := sfl.Allocate()
+		if err != nil {
+			b.Fatal(err)
+		}
+		sink = slot[0]
+
+		// Retire (not Deallocate) — slots go to retirement list.
+		// When the global FreeList empties, scan reclaims them.
+		if err := sfl.Retire(slot); err != nil {
+			b.Fatal(err)
+		}
+	}
+	_ = sink
+}
+
+// BenchmarkFreeListConcurrent measures FreeList throughput under concurrency.
+// Kept here alongside other benchmarks per project convention.
+func BenchmarkFreeListConcurrent(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	fl, _ := NewFreeList(cfg)
+	defer fl.Free()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			slot, err := fl.Allocate()
+			if err != nil {
+				b.Fatal(err)
+			}
+			fl.Deallocate(slot)
+		}
+	})
+}
+
+// BenchmarkFreeListVsPool_64B compares FreeList vs Pool for fixed-size workload.
+func BenchmarkFreeListVsPool_64B(b *testing.B) {
+	b.Run("FreeList", func(b *testing.B) {
+		cfg := DefaultFreeListConfig()
+		cfg.PoolSize = 64 * 1024 * 1024
+		cfg.SlotSize = 64
+		cfg.SlabSize = 1024 * 1024
+		cfg.Prealloc = true
+
+		fl, _ := NewFreeList(cfg)
+		defer fl.Free()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			slot, _ := fl.Allocate()
+			fl.Deallocate(slot)
+		}
+	})
+
+	b.Run("Pool", func(b *testing.B) {
+		cfg := AllocatorConfig{
+			PoolSize:  64 * 1024 * 1024,
+			SlabSize:  1024 * 1024,
+			SlabCount: 16,
+			Prealloc:  true,
+		}
+		pool, _ := NewPool(cfg)
+		defer pool.Free()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			_, err := pool.Allocate(64)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkFreeListVsShardedHotPath compares FreeList vs ShardedFreeList
+// hot-path latency in a single goroutine.
+func BenchmarkFreeListVsShardedHotPath(b *testing.B) {
+	b.Run("FreeList", func(b *testing.B) {
+		benchFreeListHotPathSingle(b)
+	})
+
+	b.Run("ShardedFreeList", func(b *testing.B) {
+		benchShardedHotPathSingle(b)
+	})
+}
+
+func benchFreeListHotPathSingle(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	fl, _ := NewFreeList(cfg)
+	defer fl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+
+	var sink byte
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		slot, _ := fl.Allocate()
+		sink = slot[0]
+		fl.Deallocate(slot)
+	}
+	_ = sink
+}
+
+func benchShardedHotPathSingle(b *testing.B) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 256 * 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 1024 * 1024
+	cfg.Prealloc = true
+
+	sfl, _ := NewShardedFreeList(cfg, 8)
+	defer sfl.Free()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(cfg.SlotSize))
+
+	var sink byte
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		slot, _ := sfl.Allocate()
+		sink = slot[0]
+		sfl.Deallocate(slot)
+	}
+	_ = sink
+}
+
+// BenchmarkFreeListVsShardedConcurrent compares FreeList vs ShardedFreeList
+// under 8-way concurrency. Run with -cpu=8 for meaningful results.
+func BenchmarkFreeListVsShardedConcurrent(b *testing.B) {
+	b.Run("FreeList", func(b *testing.B) {
+		cfg := DefaultFreeListConfig()
+		cfg.PoolSize = 256 * 1024 * 1024
+		cfg.SlotSize = 64
+		cfg.SlabSize = 1024 * 1024
+		cfg.Prealloc = true
+
+		fl, _ := NewFreeList(cfg)
+		defer fl.Free()
+
+		b.ReportAllocs()
+		b.SetBytes(int64(cfg.SlotSize))
+		b.ResetTimer()
+
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				slot, _ := fl.Allocate()
+				_ = slot[0]
+				fl.Deallocate(slot)
+			}
+		})
+	})
+
+	b.Run("ShardedFreeList", func(b *testing.B) {
+		cfg := DefaultFreeListConfig()
+		cfg.PoolSize = 256 * 1024 * 1024
+		cfg.SlotSize = 64
+		cfg.SlabSize = 1024 * 1024
+		cfg.Prealloc = true
+
+		sfl, _ := NewShardedFreeList(cfg, 8)
+		defer sfl.Free()
+
+		b.ReportAllocs()
+		b.SetBytes(int64(cfg.SlotSize))
+		b.ResetTimer()
+
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				slot, _ := sfl.Allocate()
+				_ = slot[0]
+				sfl.Deallocate(slot)
+			}
+		})
+	})
 }

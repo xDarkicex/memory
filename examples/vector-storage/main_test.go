@@ -24,8 +24,9 @@ func newVectorPool(tb testing.TB) *memory.Pool {
 
 func TestVectorStorage(t *testing.T) {
 	pool := newVectorPool(t)
-	defer pool.Reset()
+	defer pool.Free()
 
+	// Raw API: allocate bytes, cast to []float32 via unsafe.
 	data, err := pool.Allocate(vecLen)
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +37,24 @@ func TestVectorStorage(t *testing.T) {
 
 	if vec[0] != 1.0 || vec[dim-1] != 2.0 {
 		t.Fatal("vector values not preserved")
+	}
+}
+
+func TestVectorStorageWithHelpers(t *testing.T) {
+	pool := newVectorPool(t)
+	defer pool.Free()
+
+	// Typed helper: PoolSlice[float32] replaces manual unsafe casting.
+	vec, err := memory.PoolSlice[float32](pool, dim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vec = vec[:dim]
+	vec[0] = 1.0
+	vec[dim-1] = 2.0
+
+	if vec[0] != 1.0 || vec[dim-1] != 2.0 {
+		t.Fatal("vector values not preserved with helpers")
 	}
 }
 

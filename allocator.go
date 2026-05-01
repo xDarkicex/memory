@@ -8,12 +8,17 @@ import (
 	"os"
 )
 
-// Error definitions - explicit errors for all failure modes.
+// Error sentinels — every failure mode has a pre-allocated error value so
+// callers can use errors.Is without allocating.
 var (
-	ErrPoolExhausted  = errors.New("pool exhausted: cannot expand under memory pressure")
-	ErrInvalidSize    = errors.New("invalid allocation size: must be greater than 0")
-	ErrArenaExhausted = errors.New("arena exhausted: insufficient space for allocation")
-	ErrMmapFailed     = errors.New("mmap allocation failed: system limit or OOM")
+	ErrPoolExhausted          = errors.New("pool exhausted: cannot expand under memory pressure")
+	ErrInvalidSize            = errors.New("invalid allocation size: must be greater than 0")
+	ErrArenaExhausted         = errors.New("arena exhausted: insufficient space for allocation")
+	ErrMmapFailed             = errors.New("mmap allocation failed: system limit or OOM")
+	ErrPoolFreed              = errors.New("pool has been freed: no further allocations allowed")
+	ErrFreelistFreed          = errors.New("freelist has been freed: no further allocations allowed")
+	ErrArenaCapacityExceeded  = errors.New("arena slice capacity exceeded")
+	ErrSlotTooSmall           = errors.New("slot too small: sizeof(T)+12 exceeds SlotSize")
 )
 
 // PageSize is the actual system page size obtained via OS syscall.

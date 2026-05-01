@@ -7,7 +7,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"unsafe"
 
 	"github.com/xDarkicex/memory"
 )
@@ -31,19 +30,25 @@ func main() {
 	const numVectors = 1000
 	vectors := make([][]float32, numVectors)
 
+	// Raw (unsafe) approach: allocate bytes, cast to []float32.
+	//     data, _ := pool.Allocate(vecLen)
+	//     vec := unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), dim)
+
+	// Typed helper approach: PoolSlice eliminates the unsafe cast.
 	for i := 0; i < numVectors; i++ {
-		data, err := pool.Allocate(vecLen)
+		vec, err := memory.PoolSlice[float32](pool, dim)
 		if err != nil {
 			panic(err)
 		}
-		vec := unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), dim)
+		vec = vec[:dim] // set len=dim for direct indexing
 		for j := 0; j < dim; j++ {
 			vec[j] = float32(i+j) * 0.001
 		}
 		vectors[i] = vec
 	}
 
-	query := unsafe.Slice((*float32)(unsafe.Pointer(&make([]byte, vecLen)[0])), dim)
+	// Query vector: same pattern, but on the heap for comparison.
+	query := make([]float32, dim)
 	for j := 0; j < dim; j++ {
 		query[j] = float32(j) * 0.001
 	}
