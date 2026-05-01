@@ -5,20 +5,22 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/xDarkicex/memory)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Off-heap memory allocator for Go — GC-isolated slabs backed by mmap.
+Off-heap memory allocators for Go — GC-isolated, lock-free, backed by mmap.
 
-Package `memory` provides an off-heap slab allocator for Go programs with
-large bounded working sets where GC scan cost dominates latency. Allocations
-are served from mmap'd slabs via a lock-free CAS hot path and freed in bulk
-with a single `Reset()` call. The Go GC never scans this memory.
+Package `memory` provides four off-heap allocator types, each for a different
+use case. Allocations are served from mmap'd slabs; the Go GC never scans this
+memory. Safe memory reclamation (SMR) for concurrent workloads is provided by
+Hyaline (PLDI 2021), a reference-counting scheme with a single-store hot path.
 
 ## Why use this
 
 - **Off-heap** — allocations live in mmap'd memory, invisible to the Go GC
-- **Bulk free** — one `Reset()` releases everything; no per-object cleanup
+- **Variable + fixed-size** — `Pool`/`Arena` for arbitrary sizes; `FreeList`/`ShardedFreeList` for fixed-size slots
+- **Bulk or per-object free** — `Pool.Reset()` bulk-frees everything; `FreeList.Deallocate()` frees individual slots; `ShardedFreeList.Retire()` defers reclamation via Hyaline SMR
 - **Hard memory bounds** — `PoolSize` caps total mmap'd bytes; no unbounded growth
-- **Lock-free hot path** — typical allocations served via CAS, no mutex contention
+- **Lock-free hot paths** — CAS-based allocation across all allocator types; zero mutex contention on the fast path
 - **Zero heap allocations** — verified on every code path with `-benchmem`, escape analysis, and `GODEBUG=gctrace=1`
+- **ShardedFreeList with adaptive backpressure** — PI-controlled batch flushing prevents pool exhaustion stalls under extreme oversubscription
 
 ## Install
 
@@ -26,7 +28,18 @@ with a single `Reset()` call. The Go GC never scans this memory.
 go get github.com/xDarkicex/memory
 ```
 
+## Allocator types
+
+| Type | Allocation model | Free model | Concurrency | Best for |
+|------|-----------------|------------|-------------|----------|
+| `Pool` | Variable-size (CAS slab) | Bulk `Reset()` | Lock-free multi-producer | Request-scoped scratch buffers, parse buffers |
+| `Arena` | Variable-size (CAS bump pointer) | `Reset()` (rewind) or `Free()` (destroy) | Single-producer | Frame scratch, per-request temp data |
+| `FreeList` | Fixed-size (Treiber stack) | Per-object `Deallocate()` | Lock-free | Fixed-size object pools, per-vector allocations |
+| `ShardedFreeList` | Fixed-size (sharded + Hyaline SMR) | Per-object `Deallocate()` or `Retire()` | Lock-free, sharded by goroutine | High-concurrency fixed-size pools, vector DBs |
+
 ## Quickstart
+
+### Pool (variable-size, bulk free)
 
 ```go
 pool, err := memory.NewPool(memory.AllocatorConfig{
@@ -38,14 +51,60 @@ pool, err := memory.NewPool(memory.AllocatorConfig{
 if err != nil {
     panic(err)
 }
-defer pool.Reset()
+defer pool.Free()
 
 buf, err := pool.Allocate(4096) // off-heap, zero GC
+// use buf...
+pool.Reset() // bulk-free everything
+```
+
+### Arena (variable-size, single-producer)
+
+```go
+arena, err := memory.NewArena(1024 * 1024) // 1MB
+ptr, err := arena.Alloc(256)               // bump-pointer, lock-free
+arena.Reset()                              // rewind, keep mmap
+arena.Free()                               // release mmap
+```
+
+### FreeList (fixed-size, per-object free)
+
+```go
+fl, err := memory.NewFreeList(memory.FreeListConfig{
+    PoolSize:  256 * 1024 * 1024,
+    SlotSize:  64,          // every slot is exactly 64 bytes
+    SlabSize:  2 * 1024 * 1024,
+    SlabCount: 32,
+    Prealloc:  true,
+})
 if err != nil {
     panic(err)
 }
-// use buf...
-pool.Reset() // bulk-free everything
+defer fl.Free()
+
+slot, err := fl.Allocate()          // returns []byte of exactly SlotSize
+fl.Deallocate(slot)                 // return to freelist
+fl.BatchAllocate(dst [][]byte)      // batch-refill, amortizes CAS
+```
+
+### ShardedFreeList (fixed-size, high concurrency, Hyaline SMR)
+
+```go
+sfl, err := memory.NewShardedFreeList(memory.FreeListConfig{
+    PoolSize:  256 * 1024 * 1024,
+    SlotSize:  64,
+    SlabSize:  2 * 1024 * 1024,
+    SlabCount: 32,
+    Prealloc:  true,
+}, 64) // 64 shards
+if err != nil {
+    panic(err)
+}
+defer sfl.Free()
+
+slot, err := sfl.Allocate()
+// use slot...
+sfl.Deallocate(slot) // fast path: shard cache, zero atomics
 ```
 
 ## When to use
@@ -53,73 +112,80 @@ pool.Reset() // bulk-free everything
 - Large, bounded working sets (vector DBs, caches, parse buffers)
 - GC scan time dominates latency percentiles
 - Hard memory limits needed (no unbounded growth like `sync.Pool`)
+- Fixed-size objects with high allocation churn (FreeList / ShardedFreeList)
 - Allocation lifetimes are naturally scoped (per-request, per-frame, per-batch)
 - You accept trading per-allocation speed for zero GC overhead
 
 ## When not to use
 
 - Allocations are small and short-lived (Go's stack allocator is faster)
-- You need automatic memory management (no manual `Reset`)
+- You need automatic memory management (no GC integration)
 - Your working set fits comfortably in the Go heap with acceptable GC pauses
-- You need per-allocation free (arena model only supports bulk free)
+- You need per-allocation free for variable-size allocations (use FreeList instead of Pool)
 - You're building a library that can't impose lifecycle rules on callers
 
 ## Memory Model
 
 All allocations use `unix.Mmap` with `MAP_ANON | MAP_PRIVATE`. This memory is
 **not tracked by the Go GC** — no heap scanning, no `GOMEMLIMIT` pressure.
-The caller controls the lifecycle: all memory lives until `Pool.Reset()` or
-`Arena.Free()` releases it.
+The caller controls the lifecycle.
 
 ## API
 
 ### Pool
 
-`Pool` is a concurrent slab allocator. Small allocations (≤ `SlabSize`) are
-served from slabs via lock-free CAS. Large allocations (> `SlabSize`) get a
-dedicated mmap'd region tracked for cleanup. All are freed together with `Reset()`.
-
 ```go
-pool, err := memory.NewPool(memory.AllocatorConfig{
-    PoolSize:  64 * 1024 * 1024, // 64MB hard limit
-    SlabSize:  1024 * 1024,      // 1MB slabs
-    SlabCount: 16,
-    Prealloc:  true,
-})
-if err != nil {
-    panic(err)
-}
-defer pool.Reset()
-
-buf, err := pool.Allocate(4096) // off-heap, 0 heap allocs
-stats := pool.Stats()           // atomic snapshot
-pool.Reset()                    // bulk-free everything
+pool, err := memory.NewPool(memory.AllocatorConfig{...})
+buf, err := pool.Allocate(size)       // off-heap, 0 heap allocs
+stats := pool.Stats()                 // atomic snapshot
+pool.Reset()                          // bulk-free, reuse mmap
+pool.Free()                           // release mmap, invalidate pool
 ```
 
 ### Arena
 
-`Arena` is a bump-pointer allocator backed by a single mmap'd region.
-Best for single-producer, short-lived allocation bursts where the caller
-controls the full lifecycle. `Reset()` reuses the backing memory; `Free()`
-releases it.
-
 ```go
-arena, err := memory.NewArena(1024 * 1024) // 1MB
-ptr, err := arena.Alloc(256)               // bump-pointer, lock-free
+arena, err := memory.NewArena(size)
+ptr, err := arena.Alloc(size)         // bump-pointer, lock-free
 remaining := arena.Remaining()
-arena.Reset()                              // rewind, keep mmap
-arena.Free()                               // release mmap, invalidate
+arena.Reset()                         // rewind, keep mmap
+arena.Free()                          // release mmap, invalidate
 ```
 
-### Pool vs Arena
+### FreeList
 
-| | Pool | Arena |
-|---|---|---|
-| Concurrency | Multi-producer safe | Single-producer |
-| Allocation | Slab allocator (CAS) | Bump pointer (CAS) |
-| Free | Bulk `Reset()` | `Reset()` (reuse) or `Free()` (destroy) |
-| Large allocs | Yes (over SlabSize, separate mmap) | No (bounded by arena size) |
-| Use case | Shared request pools, caches, vector stores | Frame scratch, per-request temp data |
+```go
+fl, err := memory.NewFreeList(cfg)
+slot, err := fl.Allocate()            // single fixed-size slot
+n, err := fl.BatchAllocate(dst[:])    // batch refill, amortizes CAS
+err := fl.Deallocate(slot)            // return to freelist
+stats := fl.Stats()
+fl.Reset()                            // bulk-free, reuse mmap
+fl.Free()                             // release mmap
+```
+
+### ShardedFreeList
+
+```go
+sfl, err := memory.NewShardedFreeList(cfg, numShards)
+slot, err := sfl.Allocate()           // shard cache → batch refill → global
+err := sfl.Deallocate(slot)           // fast path: shard cache (zero atomics)
+err := sfl.Retire(slot)               // Hyaline SMR path (see contracts below)
+sfl.HyalineEnter(shardIdx)            // protect concurrent readers
+sfl.HyalineLeave(shardIdx)            // drain retired nodes, decrement refs
+stats := sfl.Stats()
+sfl.Reset()                            // bulk-free + restart PID controller
+sfl.Free()                             // release mmap + cancel PID controller
+```
+
+### Generic helper: PoolSlice
+
+```go
+// Allocate a typed slice backed by Pool. Returns len=0, cap=n.
+// Reslice to full capacity before use.
+vec, err := memory.PoolSlice[float32](pool, 1536) // 1536 float32s off-heap
+vec = vec[:1536] // reslice to full capacity
+```
 
 ## Safety
 
@@ -143,29 +209,109 @@ the allocation is retried rather than returning a pointer into memory being
 unmapped. **This is best-effort, not a true RCU barrier.** The only guarantee
 is external quiescence.
 
+### Hyaline SMR contracts (ShardedFreeList)
+
+The Hyaline safe memory reclamation protocol has **required invariants**.
+Violating any of them causes use-after-free data corruption.
+
+#### Enter/Leave pairing
+
+Every `HyalineEnter` **MUST** be paired with exactly one `HyalineLeave`.
+
+```go
+sfl.HyalineEnter(shardIdx)
+// ... read shared memory ...
+sfl.HyalineLeave(shardIdx) // REQUIRED: paired with Enter
+```
+
+#### Retire ordering
+
+`Retire` **MUST NOT** be called while the slot is still reachable by readers
+that entered the corresponding Hyaline slot. The correct pattern is:
+
+```go
+// CORRECT: unlink from shared structure, then retire
+sfl.HyalineEnter(shardIdx)
+slot, _ := sfl.Allocate()
+// ... use slot, possibly publish it ...
+// Remove from shared structure BEFORE retiring
+liveMu.Lock()
+delete(liveSet, slot)
+liveMu.Unlock()
+sfl.Retire(slot)       // safe: no reader can reach this slot
+sfl.HyalineLeave(shardIdx)
+```
+
+```go
+// WRONG: retiring while still reachable — reader UAF risk
+sfl.HyalineEnter(shardIdx)
+sfl.Retire(slot)       // UNSAFE: slot still in liveSet, readers can access it
+sfl.HyalineLeave(shardIdx)
+```
+
+#### Reader access window
+
+A reader that calls `HyalineEnter` is protected from having memory freed
+that was retired *after* the Enter. The reader must obtain its pointers
+through a safe publication mechanism (shared slice, map, etc.) and must
+not access memory after calling `HyalineLeave`.
+
+```go
+// Reader goroutine
+sfl.HyalineEnter(shardIdx)
+liveMu.RLock()
+for _, ptr := range livePtrs {
+    _ = *(*uint64)(ptr) // safe: protected by Enter
+}
+liveMu.RUnlock()
+sfl.HyalineLeave(shardIdx)
+// UNSAFE to access ptrs after Leave
+```
+
+#### Deallocate vs Retire
+
+- **`Deallocate`**: Fast path. Returns the slot directly to the shard cache.
+  No SMR protection. Use only when no other goroutine can reach the slot.
+- **`Retire`**: Hyaline SMR path. Defers reclamation until all readers that
+  entered before the retire have left. Use when concurrent readers may still
+  access the slot.
+
+### Double-free detection
+
+Both `Deallocate` and `Retire` detect double-frees via per-slot generation
+counters. Attempting to free or retire the same slot twice returns
+`ErrDoubleDeallocation`. This is a safety net, not a correctness guarantee
+under races — once you deallocate a slot, another goroutine can allocate
+and use it before your second deallocate.
+
 ### Error semantics
 
 | Error | Meaning |
 |-------|---------|
 | `ErrInvalidSize` | `size == 0` |
-| `ErrPoolExhausted` | `PoolSize` limit reached or `Prealloc` exceeds `PoolSize` |
+| `ErrPoolExhausted` | `PoolSize` limit reached |
 | `ErrMmapFailed` | OS `mmap` call failed (OOM, system limit, hugepage alignment) |
 | `ErrArenaExhausted` | Arena has insufficient space |
+| `ErrFreelistExhausted` | FreeList pool exhausted (all slots allocated) |
+| `ErrInvalidDeallocation` | Slot size mismatch or pointer outside any slab |
+| `ErrDoubleDeallocation` | Slot freed or retired twice |
+| `ErrLA57` | 5-level paging detected; tagged pointers require ≤48-bit virtual addresses |
 
 ## Examples
 
 See [`examples/`](examples/) for runnable demonstrations with benchmarks:
 
-| Example | Scenario | Arena vs std |
+| Example | Scenario | Key metric |
 |---|---|---|
-| [parser-scratch](examples/parser-scratch/) | JSON tokenizer with scratch buffer | 0 allocs vs 1 heap alloc per parse (4KB) |
-| [request-pool](examples/request-pool/) | Per-request TLV message builder | Bulk `Reset()` vs per-buffer free; 0 allocs vs 1 |
-| [vector-storage](examples/vector-storage/) | float32[1536] embeddings off-heap | 0 allocs vs 1 per vector (6KB); GC never scans vectors |
+| [parser-scratch](examples/parser-scratch/) | JSON tokenizer with scratch buffer | 0 allocs vs 1 heap alloc per parse |
+| [request-pool](examples/request-pool/) | Per-request TLV message builder | Bulk `Reset()` vs per-buffer free |
+| [vector-storage](examples/vector-storage/) | float32[1536] embeddings off-heap | 0 allocs vs 1 per vector; GC never scans vectors |
 
 Each example includes a `main.go` (runnable demo), `main_test.go` (correctness
 tests + benchmarks), and a `README.md` explaining the use case and tradeoffs.
 
 To run an example benchmark:
+
 ```
 go test -bench=. -benchmem ./examples/parser-scratch/
 ```
@@ -173,42 +319,73 @@ go test -bench=. -benchmem ./examples/parser-scratch/
 ## Benchmarks
 
 Apple M2, Go 1.25, Darwin (arm64). All paths show **0 heap allocations**.
-Hot path is ~9.4 ns/op; off paths (slow, grow, large) stay sub-microsecond.
 
-### Allocation paths
+### Per-vector allocation (1536 float32 = 6KB, best-of-3)
+
+| Allocator | ns/op | B/op | allocs/op | vs `make()` |
+|-----------|-------|------|-----------|-------------|
+| **FreeList** | **30.2** | 0 | 0 | **25.8× faster** |
+| **ShardedFreeList** | **38.6** | 0 | 0 | **20.2× faster** |
+| Slabby | 63.0 | 0 | 0 | 12.4× faster |
+| Pool (CAS slab) | 673 | 0 | 0 | 1.16× faster |
+| `make([]float32, 1536)` | 779 | 6,144 | 1 | 1.00× baseline |
+
+### RAG workload: index build (10K vectors, sequential)
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| `make()` (Go heap) | 11,198,105 | 61,685,779 | 10,001 |
+| Pool | 12,005,766 | 13,800 | 8 |
+| FreeList | 12,004,995 | 361,303 | 8 |
+| ShardedFreeList | 13,587,039 | 376,135 | 17 |
+
+### RAG workload: concurrent query (8 goroutines, top-10 cosine)
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| FreeList | 3,506,383 | 290 | 3 |
+| ShardedFreeList | 3,673,089 | 290 | 3 |
+| `make()` (Go heap) | 3,926,091 | 290 | 3 |
+| Pool | 4,315,811 | 292 | 3 |
+
+### ShardedFreeList stress hammer (256 goroutines, 256 shards, 128MB pool)
+
+| Duration | Total ops | ops/sec | Errors | Error rate | Stalls | Corruption |
+|----------|-----------|---------|--------|-----------|--------|-----------|
+| 30s | 0.43B | 14.43M | 1.39M | 0.32% | 0 | 0 |
+| 5m | 3.95B | 13.16M | 4.13M | 0.10% | 0 | 0 |
+| 10m | 7.34B | 12.23M | 2.22M | 0.03% | 0 | 0 |
+| **1h** | **42.02B** | **11.67M** | **15.59M** | **0.037%** | **0** | **0** |
+
+**1-hour post-hammer recovery:** 10,000/10,000 alloc/free cycles succeeded.
+RSS flat at ~6 MB (128 MB pool is off-heap mmap). Zero memory leak, zero
+throughput degradation beyond asymptotic PID settling. **v1.0.0-gold certified.**
+
+### Before vs. after: static threshold → PID adaptive threshold (5-minute run)
+
+| Metric | Static (threshold=65) | PID (adaptive) | Improvement |
+|--------|----------------------|----------------|-------------|
+| Stall duration | **6 seconds** | **0 seconds** | Eliminated |
+| Error rate | 1.07% | 0.10% | **10× lower** |
+| Total errors | 40.1M | 4.13M | **89.7% reduction** |
+
+### Pool allocation paths
 
 | Path | ops/sec | ns/op | B/op | allocs/op |
-|---|---|---|---|---|
-| Hot path (64B, slab has space) | 124M | 9.4 | 0 | 0 |
+|------|---------|-------|------|-----------|
+| Hot path (slab has space) | 124M | 9.4 | 0 | 0 |
 | Slow path (scan for free slab) | 3.7M | 314 | 0 | 0 |
 | Grow path (mmap new slab) | 1.9M | 620 | 0 | 0 |
 | Large allocation (1MB, direct mmap) | 2.0M | 595 | 0 | 0 |
-| Varied sizes (16–4096B) | 100M | 11.5 | 0 | 0 |
 
-### Pool vs Arena (64B allocation)
-
-| Allocator | ops/sec | ns/op | B/op | allocs/op |
-|---|---|---|---|---|
-| Pool.Allocate | 126M | 9.4 | 0 | 0 |
-| Arena.Alloc | 131M | 8.8 | 0 | 0 |
-
-### Reset cost
+### Reset cost (Pool)
 
 | Slabs | ns/op | B/op | allocs/op |
-|---|---|---|---|
+|-------|-------|------|-----------|
 | 4 | 2,339 | 0 | 0 |
 | 16 | 9,463 | 0 | 0 |
 | 64 | 39,591 | 0 | 0 |
 | 256 | 172,423 | 0 | 0 |
-
-### Concurrent (8 goroutines)
-
-| Benchmark | ops/sec | ns/op | B/op | allocs/op |
-|---|---|---|---|---|
-| Per-goroutine pool | 79M | 14.9 | 0 | 0 |
-| Shared pool | 10.6M | 107 | 4 | 0¹ |
-
-¹ 4 B/op is `sync.WaitGroup` stack spill in benchmark scaffolding, not a heap allocation.
 
 ### GC Isolation (`GODEBUG=gctrace=1`)
 
@@ -216,7 +393,7 @@ Sustained runs under `GODEBUG=gctrace=1`. Every path shows **`0→0→0 MB`**
 live heap with zero automatic GC triggers.
 
 | Path | Duration | GC Cycles | Live Heap | Auto GC |
-|---|---|---|---|---|
+|------|----------|-----------|-----------|---------|
 | Hot path | 10s | 7 forced | 0→0→0 MB | 0 |
 | Grow path | 5s | 4 forced | 0→0→0 MB | 0 |
 | Large allocation | 5s | 4 forced | 0→0→0 MB | 0 |
@@ -231,7 +408,7 @@ the runtime never detected heap growth.
 RSS behavior after `Reset()` varies by platform:
 
 | Platform | `madvise` behavior | RSS after Reset |
-|---|---|---|
+|----------|-------------------|-----------------|
 | Linux | `MADV_DONTNEED` releases pages immediately | RSS drops |
 | macOS (darwin) | `MADV_FREE` lazily reclaims pages | RSS may linger until pressure |
 
@@ -241,6 +418,8 @@ Go runtime metrics (`MemStats`) always report zero heap growth.
 
 ## Configuration reference
 
+### AllocatorConfig (Pool)
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `PoolSize` | uint64 | 64MB | Hard limit on total mmap'd bytes |
@@ -249,14 +428,39 @@ Go runtime metrics (`MemStats`) always report zero heap growth.
 | `Prealloc` | bool | false | Eagerly allocate `SlabCount` slabs at creation |
 | `UseHugePages` | bool | false | Use `MAP_HUGETLB` (Linux only; requires 2MB-aligned `SlabSize`) |
 
-**Prealloc:** When true, `NewPool` eagerly allocates `SlabCount` slabs. On
-failure, already-allocated slabs are rolled back and `ErrMmapFailed` is returned.
+### FreeListConfig (FreeList / ShardedFreeList)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `PoolSize` | uint64 | 64MB | Hard limit on total mmap'd bytes |
+| `SlotSize` | uint64 | 64 | Fixed size of each slot (min 32 for metadata) |
+| `SlabSize` | uint64 | 1MB | Size of each slab |
+| `SlabCount` | int | 16 | Initial slab descriptor capacity |
+| `Prealloc` | bool | false | Eagerly allocate `SlabCount` slabs at creation |
+
+**Prealloc:** When true, `NewPool`/`NewFreeList` eagerly allocates `SlabCount`
+slabs. On failure, already-allocated slabs are rolled back and `ErrMmapFailed`
+is returned.
 
 **UseHugePages:** Linux only. Attempts `MAP_HUGETLB`; silently falls back to
 regular mmap if unavailable. macOS ignores this flag.
 
 **PoolSize** is a hard limit on mmap'd bytes tracked via atomic `reserve()`.
 When exhausted, `Allocate` returns `ErrPoolExhausted`.
+
+**SlotSize** (FreeList/ShardedFreeList): Must be ≥ 32 bytes. The slot metadata
+(Hyaline chain pointers, batch references, struct index, shard index) occupies
+offsets 0–31. Offsets 32+ are usable payload.
+
+### ShardedFreeList shard count
+
+The `numShards` parameter to `NewShardedFreeList` defaults to 64. It is rounded
+up to the next power of two. More shards reduce cross-CPU contention but increase
+memory overhead (per-shard batch, caches, mutex). 64 is a good default for most
+workloads; 256 is appropriate for extreme oversubscription scenarios.
+
+For P-bound affinity (goroutines pinned to OS threads), build with `-tags procpin`
+to use `runtime.procPin` instead of stack-address hashing for shard selection.
 
 ## Reference
 
@@ -285,11 +489,29 @@ macOS uses `MADV_FREE` (lazy).
 
 | Operation | Complexity | Locks |
 |-----------|------------|-------|
-| Hot path (slab has space) | O(1), lock-free CAS | None |
-| Slow path (scan slabs) | O(n slabs) | None |
-| New slab creation | O(1) + mmap | None |
-| Large allocation | O(1) + mmap | `largeMu` (brief) |
-| Reset | O(n slabs) munmap | `largeMu` (brief) |
+| Pool hot path (slab has space) | O(1), lock-free CAS | None |
+| Pool slow path (scan slabs) | O(n slabs) | None |
+| FreeList.Allocate | O(1), lock-free CAS | None |
+| ShardedFreeList.Allocate (cache hit) | O(1), zero atomics | None |
+| ShardedFreeList.Allocate (batch refill) | O(1), lock-free CAS | None |
+| ShardedFreeList.Retire | O(1) amortized, lock-free CAS | `batchMu` (per-shard, uncontended) |
+| HyalineEnter | O(1), single atomic store | None |
+| HyalineLeave | O(nodes in slot chain) | None |
+| PID controller | O(1) every 100ms, background | None |
+| Reset | O(n slabs) munmap | None |
+
+### PID adaptive threshold (ShardedFreeList)
+
+`NewShardedFreeList` launches a background PI controller (Kp=2.0, Ki=0.5,
+anti-windup ±100, 100ms ticker) that dynamically adjusts the Hyaline batch
+flush threshold from its default of 65 down to as low as 1. When the pool
+drops below 20% free capacity, the controller forces partial batches to
+flush sooner, preventing the exhaustion cliff that occurs with a static
+threshold. The hot path (`hyalineRetire`) sees only a single
+`atomic.Uint64.Load` — zero additional contention or branching.
+
+The controller is automatically restarted on `Reset()` and cancelled on
+`Free()`.
 
 ### Watchdog
 
@@ -304,6 +526,7 @@ A process-wide heap pressure monitor is available via
 - **Not a substitute for `sync.Pool`** — designed for explicit lifecycle control, not automatic GC integration
 - **Not a general-purpose allocator** — tuned for slab workloads; large allocations bypass slabs
 - **Not safe for use-after-Reset** — accessing an allocation after `Reset()` will segfault or corrupt data
+- **Not safe for use-after-Retire without Enter** — accessing a retired slot without holding an active Hyaline enter is a use-after-free bug
 
 ## Contributing
 

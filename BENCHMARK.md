@@ -253,6 +253,7 @@ includes 4× `Gosched()` to yield to in-flight reader `Leave` cycles.
 | 30s | 433M | **14.43M** | 1.39M | 0.32% | 10K/10K | Throughput climbs 12.1→14.4M, **no stall** |
 | 5m | 3.95B | **13.16M** | 4.13M | 0.10% | 10K/10K | **Zero stalls**, errors increment every second |
 | 10m | 7.34B | **12.23M** | 2.22M | 0.03% | 10K/10K | Flat 12.2M/s steady state, **no memory leak** |
+| 1h | 42.02B | **11.67M** | 15.59M | 0.037% | **10K/10K** | **v1.0.0-gold** — zero stall, zero leak, zero corruption |
 
 ### 5-minute PID run — per-minute throughput
 
@@ -278,6 +279,38 @@ includes 4× `Gosched()` to yield to in-flight reader `Leave` cycles.
 | 8 | 12.2→12.2M | 732M | 0.04M | 0 |
 | 9 | 12.2→12.2M | 732M | 0.04M | 0 |
 | 10 | 12.2→12.2M | 585M | 0.02M | 0 |
+
+### 1-hour PID run — per-15-minute throughput
+
+| Time | ops/sec | Total ops | Errors | corrupt |
+|------|---------|-----------|--------|---------|
+| 5m | 12.65M | 3.80B | 4.32M | 0 |
+| 10m | 12.64M | 7.59B | 5.31M | 0 |
+| 15m | 12.19M | 10.97B | 6.38M | 0 |
+| 20m | 12.02M | 14.43B | 8.21M | 0 |
+| 25m | 11.91M | 17.87B | 9.48M | 0 |
+| 30m | 11.88M | 21.38B | 11.46M | 0 |
+| 35m | 11.83M | 24.84B | 12.53M | 0 |
+| 40m | 11.78M | 28.27B | 13.19M | 0 |
+| 45m | 11.74M | 31.68B | 13.90M | 0 |
+| 50m | 11.70M | 35.11B | 14.61M | 0 |
+| 55m | 11.68M | 38.55B | 14.87M | 0 |
+| 60m | 11.67M | 42.02B | 15.59M | 0 |
+
+**1-hour steady state analysis:** Throughput declines asymptotically from 12.65M
+at 5m to 11.67M at 60m — a 7.7% decline that decelerates, not accelerates. Error
+rate per 5-minute window stabilizes at ~0.7M. If a memory leak existed, throughput
+would accelerate downward and errors would spike. Neither occurs.
+
+**Post-hammer recovery (1-hour run):** 10,000/10,000 alloc/free cycles succeeded
+immediately after the hammer stopped. The pool drained cleanly — all Hyaline batch
+chains were reclaimed, all shard caches were usable, and the global FreeList was
+fully operational. Zero backlog, zero stranded nodes.
+
+**RSS:** Flat at ~6 MB for the full hour. The 128 MB pool lives entirely off-heap
+(mmap'd, invisible to the Go runtime and OS RSS accounting). The PID background
+goroutine adds zero measurable heap pressure (100ms ticker, no allocations in the
+control loop).
 
 **Memory leak analysis:** Throughput flatlines at 12.2M/s from minute 3 through
 minute 10 — zero degradation over 7+ minutes of continuous hammering. Error rate
