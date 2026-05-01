@@ -322,35 +322,43 @@ go test -bench=. -benchmem ./examples/parser-scratch/
 
 ## Benchmarks
 
-Apple M2, Go 1.25, Darwin (arm64). All paths show **0 heap allocations**.
+See [BENCHMARK.md](BENCHMARK.md) for extended methodology, raw data, and
+historical trends. Summary below. Apple M2, Go 1.25, Darwin (arm64). All paths
+show **0 heap allocations**.
 
 ### Per-vector allocation (1536 float32 = 6KB, best-of-3)
 
 | Allocator | ns/op | B/op | allocs/op | vs `make()` |
 |-----------|-------|------|-----------|-------------|
-| **FreeList** | **30.2** | 0 | 0 | **25.8× faster** |
-| **ShardedFreeList** | **38.6** | 0 | 0 | **20.2× faster** |
-| Slabby | 63.0 | 0 | 0 | 12.4× faster |
-| Pool (CAS slab) | 673 | 0 | 0 | 1.16× faster |
-| `make([]float32, 1536)` | 779 | 6,144 | 1 | 1.00× baseline |
+| **FreeList** | **30.8** | 0 | 0 | **17.0× faster** |
+| **ShardedFreeList** | **38.5** | 0 | 0 | **13.6× faster** |
+| Slabby | 63.4 | 0 | 0 | 8.3× faster |
+| `make([]float32, 1536)` | 525 | 6,144 | 1 | 1.00× baseline |
+| Pool (CAS slab) | 1,041 | 0 | 0 | 2.0× slower |
 
 ### RAG workload: index build (10K vectors, sequential)
 
-| Allocator | ns/op | B/op | allocs/op |
+B/op and allocs/op reflect scaffolding (pool creation, goroutines), not the allocation hot path.
+
+| Allocator | ms/op | B/op | allocs/op |
 |-----------|-------|------|-----------|
-| `make()` (Go heap) | 11,198,105 | 61,685,779 | 10,001 |
-| Pool | 12,005,766 | 13,800 | 8 |
-| FreeList | 12,004,995 | 361,303 | 8 |
-| ShardedFreeList | 13,587,039 | 376,135 | 17 |
+| `make()` (Go heap) | 11.9 | 61,685,782 | 10,001 |
+| Pool | 12.3 | 13,813 | 8 |
+| FreeList | 13.3 | 361,308 | 8 |
+| ShardedFreeList | 14.5 | 376,134 | 17 |
+| Slabby | 26.0 | 62,221,757 | 10,024 |
 
 ### RAG workload: concurrent query (8 goroutines, top-10 cosine)
 
-| Allocator | ns/op | B/op | allocs/op |
+All allocators show the same scaffolding overhead (~292 B/op, 3 allocs/op). The allocation hot path is zero heap.
+
+| Allocator | ms/op | B/op | allocs/op |
 |-----------|-------|------|-----------|
-| FreeList | 3,506,383 | 290 | 3 |
-| ShardedFreeList | 3,673,089 | 290 | 3 |
-| `make()` (Go heap) | 3,926,091 | 290 | 3 |
-| Pool | 4,315,811 | 292 | 3 |
+| Pool | 3.41 | 292 | 3 |
+| `make()` (Go heap) | 3.42 | 292 | 3 |
+| FreeList | 3.45 | 292 | 3 |
+| ShardedFreeList | 3.61 | 292 | 3 |
+| Slabby | 3.70 | 292 | 3 |
 
 ### ShardedFreeList stress hammer (256 goroutines, 256 shards, 128MB pool)
 
@@ -398,14 +406,21 @@ live heap with zero automatic GC triggers.
 
 | Path | Duration | GC Cycles | Live Heap | Auto GC |
 |------|----------|-----------|-----------|---------|
-| Hot path | 10s | 7 forced | 0→0→0 MB | 0 |
-| Grow path | 5s | 4 forced | 0→0→0 MB | 0 |
-| Large allocation | 5s | 4 forced | 0→0→0 MB | 0 |
+| Pool hot path | 10s | 7 forced | 0→0→0 MB | 0 |
+| Pool grow path | 5s | 4 forced | 0→0→0 MB | 0 |
+| Pool large allocation | 5s | 4 forced | 0→0→0 MB | 0 |
+| FreeList per-vector alloc+free | 1s | 2 forced | 0→0→0 MB | 0 |
+| ShardedFreeList per-vector alloc+free | 1s | 2 forced | 0→0→0 MB | 0 |
+| ShardedFreeList + PID controller | 60m | all forced | 0→0→0 MB | 0 |
 
 gctrace format (`live_before→live_marked→live_after`): all zeros means the GC
 found nothing to scan. All cycles are `(forced)` — triggered by `runtime.GC()`
 in benchmark scaffolding, not by heap pressure. No automatic GC fired because
 the runtime never detected heap growth.
+
+The PID controller (100ms ticker, per-vector allocations, 1-hour stress hammer)
+adds zero measurable heap pressure. GC trace shows steady `0→0→0 MB` with no
+creep over time.
 
 ### Platform notes
 
