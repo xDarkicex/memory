@@ -12,8 +12,11 @@
 package memory
 
 import (
+	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -27,6 +30,7 @@ type ShardedFreeList struct {
 	numShards int
 	gen       atomic.Uint64
 	hyHeader  hyalineHeader
+	cancel    context.CancelFunc
 }
 
 type shard struct {
@@ -58,13 +62,19 @@ func NewShardedFreeList(cfg FreeListConfig, numShards int) (*ShardedFreeList, er
 	}
 
 	shards := make([]shard, numShards)
+	ctx, cancel := context.WithCancel(context.Background())
+
 	sfl := &ShardedFreeList{
 		cfg:       cfg,
 		global:    global,
 		shards:    shards,
 		numShards: numShards,
+		cancel:    cancel,
 	}
 	hyalineHeaderInit(&sfl.hyHeader)
+	
+	go sfl.runPIDController(ctx)
+	
 	return sfl, nil
 }
 
@@ -322,6 +332,9 @@ func (sfl *ShardedFreeList) Retire(slot []byte) error {
 // Reset releases all in-flight slots and reinitializes shards.
 // WARNING: Not concurrent-safe. Caller must ensure quiescence.
 func (sfl *ShardedFreeList) Reset() {
+	if sfl.cancel != nil {
+		sfl.cancel()
+	}
 	sfl.gen.Add(1)
 	sfl.global.Reset()
 	hyalineHeaderInit(&sfl.hyHeader)
@@ -332,10 +345,18 @@ func (sfl *ShardedFreeList) Reset() {
 		sfl.shards[i].fresh.len.Store(0)
 		hyalineBatchInit(&sfl.shards[i].batch)
 	}
+
+	// Restart the adaptive PID controller for the new lifecycle
+	ctx, cancel := context.WithCancel(context.Background())
+	sfl.cancel = cancel
+	go sfl.runPIDController(ctx)
 }
 
 // Free releases all resources. The allocator must not be used after Free.
 func (sfl *ShardedFreeList) Free() error {
+	if sfl.cancel != nil {
+		sfl.cancel()
+	}
 	sfl.gen.Add(1)
 	return sfl.global.Free()
 }
@@ -356,5 +377,74 @@ func (sfl *ShardedFreeList) forceReclamation() {
 			hyalineRetireFlush(&sfl.hyHeader, &sh.batch, sfl.hyalineFreeFn)
 		}
 		sh.batchMu.Unlock()
+	}
+	
+	// Micro-optimization: Yield the processor to allow active readers a chance 
+	// to call hyalineLeave, drain the slot chains, and free the memory before 
+	// the allocator retries BatchAllocate.
+	for i := 0; i < 4; i++ {
+		runtime.Gosched()
+	}
+}
+
+// runPIDController runs a background PI control loop to dynamically adjust
+// the hyaline batch flush threshold based on pool depth.
+func (sfl *ShardedFreeList) runPIDController(ctx context.Context) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Proportional and Integral gains
+	const Kp = 2.0
+	const Ki = 0.5
+	
+	var integral float64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stats := sfl.Stats()
+			if stats.SlotSize == 0 || stats.Reserved == 0 {
+				continue
+			}
+
+			// Calculate pool depth
+			totalSlots := float64(stats.Reserved / stats.SlotSize)
+			allocatedSlots := float64(stats.Allocated / stats.SlotSize)
+			currentDepth := totalSlots - allocatedSlots
+			
+			// Target 20% free capacity
+			targetDepth := totalSlots * 0.20
+			
+			// Error is positive when pool is below target
+			err := targetDepth - currentDepth
+			
+			// Update integral (anti-windup by capping it)
+			integral += err
+			if integral > 100 {
+				integral = 100
+			} else if integral < -100 {
+				integral = -100
+			}
+
+			// Calculate new threshold: 65 - (Kp * error + Ki * integral)
+			// Positive error drives threshold down to flush sooner.
+			adjustment := (Kp * err) + (Ki * integral)
+			
+			newThreshold := float64(65) - adjustment
+			
+			// Clamp between 1 and 65
+			var clamped uint64
+			if newThreshold > 65 {
+				clamped = 65
+			} else if newThreshold < 1 {
+				clamped = 1
+			} else {
+				clamped = uint64(newThreshold)
+			}
+			
+			sfl.hyHeader.threshold.Store(clamped)
+		}
 	}
 }

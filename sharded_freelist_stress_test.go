@@ -630,8 +630,11 @@ func TestStressDoubleFree(t *testing.T) {
 	}
 	defer sfl.Free()
 
-	numCPU := runtime.GOMAXPROCS(0)
-	workers := numCPU * 4
+	// The double-free test must be single-goroutine.
+	// If concurrent, another goroutine could Allocate the slot immediately 
+	// after the first Deallocate and before the second Deallocate, leading 
+	// to memory corruption when the second Deallocate clobbers the active pointer.
+	workers := 1
 	t.Logf("StressDoubleFree: workers=%d", workers)
 
 	var (

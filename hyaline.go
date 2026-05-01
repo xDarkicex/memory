@@ -38,9 +38,6 @@ const hyalineOrder = 6
 // hyalineK is the number of Hyaline vector slots.
 const hyalineK = 1 << hyalineOrder
 
-// hyalineThreshold is the batch flush threshold. k+1 ensures at least one
-// node per slot on average when flushing.
-const hyalineThreshold = hyalineK + 1
 
 // hyalineSlot is a single Hyaline vector slot, cache-line padded.
 //
@@ -57,14 +54,16 @@ type hyalineSlot struct {
 
 // hyalineHeader manages k Hyaline slots shared across all shards.
 type hyalineHeader struct {
-	slots [hyalineK]hyalineSlot
+	slots     [hyalineK]hyalineSlot
+	threshold atomic.Uint64
 }
 
-// hyalineHeaderInit zeros all slots in the header.
+// hyalineHeaderInit prepares the shared slot vector.
 func hyalineHeaderInit(h *hyalineHeader) {
-	for i := range h.slots {
+	for i := 0; i < hyalineK; i++ {
 		h.slots[i].head.Store(0)
 	}
+	h.threshold.Store(hyalineK + 1)
 }
 
 // hyalineEnter marks a slot as occupied. The hot path is a single seq_cst store.
@@ -145,8 +144,8 @@ func hyalineRetire(h *hyalineHeader, batch *hyalineBatch, node unsafe.Pointer, f
 	batch.first = node
 	batch.counter++
 
-	// Default flush threshold for amortized performance.
-	if batch.counter >= hyalineThreshold {
+	// Adaptive flush threshold to prevent exhaustion.
+	if batch.counter >= h.threshold.Load() {
 		hyalineRetireFlush(h, batch, freeFn)
 	}
 }

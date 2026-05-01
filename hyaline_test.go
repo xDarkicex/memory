@@ -214,9 +214,9 @@ func TestHyalineStaggeredLeave(t *testing.T) {
 	var freed []uint64
 	fn := testFreeFn(&freed)
 
-	// Need hyalineThreshold nodes for a valid flush.
-	// Slot 0 and 1 are occupied. We need to retire at least hyalineThreshold nodes.
-	for i := 0; i < hyalineThreshold; i++ {
+	// Need 65 nodes for a valid flush.
+	// Slot 0 and 1 are occupied. We need to retire at least 65 nodes.
+	for i := 0; i < 65; i++ {
 		hyalineRetire(&h, &batch, testNode(base, i), fn)
 	}
 
@@ -299,8 +299,8 @@ func TestHyalineBatchFlushThreshold(t *testing.T) {
 	}
 
 	// Batch should be empty or partially filled after auto-flush.
-	if batch.counter >= hyalineThreshold {
-		t.Fatalf("batch counter = %d after hugeBatch, should be < threshold=%d", batch.counter, hyalineThreshold)
+	if batch.counter >= 65 {
+		t.Fatalf("batch counter = %d after hugeBatch, should be < threshold=%d", batch.counter, 65)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestHyalineZeroHeapAllocs(t *testing.T) {
 
 	// Warm up: fill and flush once to allocate the freed slice.
 	hyalineEnter(&h, 0)
-	for i := range hyalineThreshold {
+	for i := range 65 {
 		hyalineRetire(&h, &batch, testNode(base, i), fn)
 	}
 	hyalineLeave(&h, 0, fn)
