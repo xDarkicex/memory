@@ -13,8 +13,6 @@ import (
 	"math"
 	"sync/atomic"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 // Arena provides an off-heap memory arena with concurrent-safe bump allocation.
@@ -32,7 +30,7 @@ func NewArena(size uint64) (*Arena, error) {
 	if size > math.MaxInt {
 		return nil, fmt.Errorf("arena size %d exceeds addressable int range", size)
 	}
-	data, err := unix.Mmap(-1, 0, int(size), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	data, err := mmapAnonymous(int(size))
 	if err != nil {
 		return nil, ErrMmapFailed
 	}
@@ -84,7 +82,7 @@ func (a *Arena) Alloc(size uint64) (unsafe.Pointer, error) {
 // After Free, the arena is invalid and must not be used.
 func (a *Arena) Free() error {
 	if a.mmapd && len(a.data) > 0 {
-		if err := unix.Munmap(a.data); err != nil {
+		if err := munmap(a.data); err != nil {
 			return err
 		}
 		a.data = nil // Prevent use-after-free

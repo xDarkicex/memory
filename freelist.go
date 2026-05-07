@@ -34,11 +34,10 @@ package memory
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -204,15 +203,15 @@ func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
 
 	// Validate that mmap returns addresses within the 48-bit VA window
 	// required by the tagged-pointer ABA scheme (see tagShift/ptrMask).
-	data, err := unix.Mmap(-1, 0, int(PageSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	data, err := mmapAnonymous(PageSize)
 	if err != nil {
 		return nil, fmt.Errorf("cannot validate VA space: %w", err)
 	}
 	if uintptr(unsafe.Pointer(&data[0]))>>tagShift != 0 {
-		unix.Munmap(data)
+		munmap(data)
 		return nil, ErrLA57
 	}
-	unix.Munmap(data)
+	munmap(data)
 
 	if cfg.Prealloc {
 		for i := 0; i < cfg.SlabCount; i++ {
@@ -272,7 +271,7 @@ func (fl *FreeList) growSlab() error {
 	// while we waited for the mutex (thundering herd guard).
 	if unpackPtr(fl.head.Load()) != nil {
 		fl.slabMu.Unlock()
-		unix.Munmap(data)
+		munmap(data)
 		fl.reserved.Add(-slabSize)
 		return nil // freelist already populated, caller will retry popFree
 	}
@@ -281,7 +280,7 @@ func (fl *FreeList) growSlab() error {
 	idx := int(fl.slabLen.Load())
 	if idx >= fl.slabCap {
 		fl.slabMu.Unlock()
-		unix.Munmap(data)
+		munmap(data)
 		fl.reserved.Add(-slabSize)
 		return ErrFreelistExhausted
 	}
@@ -319,7 +318,10 @@ func (fl *FreeList) growSlab() error {
 
 // mmapSlabBase is the base mmap implementation shared across platforms.
 func (fl *FreeList) mmapSlabBase(slabSize uint64) ([]byte, error) {
-	data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if slabSize > math.MaxInt {
+		return nil, fmt.Errorf("slab size %d exceeds addressable int range", slabSize)
+	}
+	data, err := mmapAnonymous(int(slabSize))
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +643,7 @@ func (fl *FreeList) Reset() {
 	n := int(fl.slabLen.Load())
 	for i := 0; i < n; i++ {
 		if s := fl.slabBuf[i]; s != nil && len(s.data) > 0 {
-			unix.Munmap(s.data)
+			munmap(s.data)
 		}
 		fl.slabBuf[i] = nil
 		fl.slabBase[i] = slabEntry{}
@@ -672,7 +674,7 @@ func (fl *FreeList) Free() error {
 	n := int(fl.slabLen.Load())
 	for i := 0; i < n; i++ {
 		if s := fl.slabBuf[i]; s != nil && len(s.data) > 0 {
-			unix.Munmap(s.data)
+			munmap(s.data)
 		}
 		fl.slabBuf[i] = nil
 		fl.slabBase[i] = slabEntry{}

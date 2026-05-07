@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 // testSlotSize is a test slot size large enough for Hyaline metadata + payload.
@@ -18,11 +16,11 @@ const testSlotSize = 128
 // The region is automatically unmapped via t.Cleanup.
 func testBase(tb testing.TB, size int) unsafe.Pointer {
 	tb.Helper()
-	data, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	data, err := mmapAnonymous(size)
 	if err != nil {
 		tb.Fatalf("mmap test region: %v", err)
 	}
-	tb.Cleanup(func() { unix.Munmap(data) })
+	tb.Cleanup(func() { munmap(data) })
 	return unsafe.Pointer(unsafe.SliceData(data))
 }
 

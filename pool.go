@@ -14,8 +14,6 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-
-	"golang.org/x/sys/unix"
 )
 
 // Pool manages an off-heap memory pool with mmap-backed slabs.
@@ -117,7 +115,7 @@ func NewPool(cfg AllocatorConfig) (*Pool, error) {
 				// Rollback: munmap already-allocated slabs
 				for j := 0; j < i; j++ {
 					if s := p.slabBuf[j]; s != nil && s.mmapd {
-						unix.Munmap(s.data)
+						munmap(s.data)
 						p.reserved.Add(-cfg.SlabSize)
 					}
 				}
@@ -145,7 +143,7 @@ func (p *Pool) mmapSlabBase(slabSize uint64) ([]byte, error) {
 	if slabSize > math.MaxInt {
 		return nil, fmt.Errorf("slab size %d exceeds addressable int range", slabSize)
 	}
-	data, err := unix.Mmap(-1, 0, int(slabSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	data, err := mmapAnonymous(int(slabSize))
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +309,7 @@ retry:
 
 		// Check capacity before extending — if slabBuf is full, pool is exhausted.
 		if newIdx >= cap(p.slabBuf) {
-			unix.Munmap(data)
+			munmap(data)
 			p.reserved.Add(-slabSize)
 			p.growMu.Unlock()
 			return nil, ErrPoolExhausted
@@ -376,7 +374,7 @@ func (p *Pool) allocateLarge(size uint64) ([]byte, error) {
 	idx := int(p.largeLen.Load())
 	if idx >= len(p.largeStructs) {
 		p.largeMu.Unlock()
-		unix.Munmap(data)
+		munmap(data)
 		p.reserved.Add(-size)
 		p.allocated.Add(-size)
 		p.committed.Add(-size)
@@ -420,7 +418,7 @@ func (p *Pool) release() {
 	slabs := p.slabBuf[:p.slabLen.Load()]
 	for i := range slabs {
 		if s := slabs[i]; s != nil && s.mmapd && len(s.data) > 0 {
-			unix.Munmap(s.data)
+			munmap(s.data)
 		}
 		p.slabBuf[i] = nil
 	}
@@ -429,7 +427,7 @@ func (p *Pool) release() {
 	largeLen := p.largeLen.Load()
 	for i := int64(0); i < largeLen; i++ {
 		if s := p.largeBuf[i]; s != nil && s.mmapd && len(s.data) > 0 {
-			unix.Munmap(s.data)
+			munmap(s.data)
 		}
 		p.largeBuf[i] = nil
 	}
