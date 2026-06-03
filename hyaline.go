@@ -74,16 +74,19 @@ func hyalineEnter(h *hyalineHeader, slotIdx int) {
 // ptrAt is a helper that loads a uint64 from off-heap memory at ptr+offset
 // and converts it to unsafe.Pointer. This is the materialization point for
 // pointers stored in off-heap node metadata.
+//go:nocheckptr
 func ptrAt(ptr unsafe.Pointer, offset uintptr) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(*(*uint64)(unsafe.Add(ptr, offset))))
 }
 
 // storePtr writes a pointer as uint64 at ptr+offset.
+//go:nocheckptr
 func storePtr(ptr unsafe.Pointer, offset uintptr, val unsafe.Pointer) {
 	*(*uint64)(unsafe.Add(ptr, offset)) = uint64(uintptr(val))
 }
 
 // hyalineLeave clears the occupied flag and drains any queued retired nodes.
+//go:nocheckptr
 func hyalineLeave(h *hyalineHeader, slotIdx int, freeFn func(batchHead unsafe.Pointer)) {
 	slot := &h.slots[slotIdx]
 
@@ -130,6 +133,7 @@ func hyalineBatchInit(b *hyalineBatch) {
 }
 
 // hyalineRetire appends a node to the per-shard batch.
+//go:nocheckptr
 func hyalineRetire(h *hyalineHeader, batch *hyalineBatch, node unsafe.Pointer, freeFn func(batchHead unsafe.Pointer)) {
 	if batch.first == nil {
 		batch.last = node
@@ -151,6 +155,7 @@ func hyalineRetire(h *hyalineHeader, batch *hyalineBatch, node unsafe.Pointer, f
 }
 
 // hyalineRetireFlush distributes the accumulated batch across all k slots.
+//go:nocheckptr
 func hyalineRetireFlush(h *hyalineHeader, batch *hyalineBatch, freeFn func(batchHead unsafe.Pointer)) {
 	if batch.counter == 0 {
 		return

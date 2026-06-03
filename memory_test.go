@@ -507,3 +507,19 @@ func TestReadProfile(t *testing.T) {
 		t.Log("Profile may be zero for fresh allocation")
 	}
 }
+
+func TestNewPoolHugepageValidation(t *testing.T) {
+	if HugepageSize == 0 {
+		t.Skip("HugepageSize is 0 — huge page validation not testable on this platform")
+	}
+	cfg := AllocatorConfig{
+		PoolSize:     64 * 1024 * 1024,
+		SlabSize:     HugepageSize + 1, // not a multiple
+		SlabCount:    1,
+		UseHugePages: true,
+	}
+	_, err := NewPool(cfg)
+	if err == nil {
+		t.Fatal("expected error for SlabSize not a multiple of HugepageSize")
+	}
+}

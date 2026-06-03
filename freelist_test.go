@@ -311,3 +311,107 @@ func TestFreeListZeroHeapAllocs(t *testing.T) {
 	}
 }
 
+
+func TestFreeListAccessors(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 64 * 1024
+	cfg.SlabCount = 1
+	cfg.Prealloc = true
+
+	fl, err := NewFreeList(cfg)
+	if err != nil {
+		t.Fatalf("NewFreeList: %v", err)
+	}
+	defer fl.Free()
+
+	if n := fl.PreallocSlabCount(); n != 1 {
+		t.Errorf("PreallocSlabCount = %d, want 1", n)
+	}
+	if n := fl.SlabSize(); n != 64*1024 {
+		t.Errorf("SlabSize = %d, want %d", n, 64*1024)
+	}
+	if n := fl.SlotSize(); n != 64 {
+		t.Errorf("SlotSize = %d, want 64", n)
+	}
+	if n := fl.CasRetries(); n != 0 {
+		t.Errorf("CasRetries = %d, want 0", n)
+	}
+
+	slots := make([][]byte, 10)
+	for i := range slots {
+		s, err := fl.Allocate()
+		if err != nil {
+			t.Fatalf("Allocate %d: %v", i, err)
+		}
+		slots[i] = s
+	}
+	for _, s := range slots {
+		if err := fl.Deallocate(s); err != nil {
+			t.Fatalf("Deallocate: %v", err)
+		}
+	}
+	_ = fl.CasRetries()
+}
+
+func TestNewFreeListSlabSizeLessThanSlotSize(t *testing.T) {
+	cfg := FreeListConfig{
+		PoolSize: 1024 * 1024,
+		SlotSize: 4096,
+		SlabSize: 64, // smaller than SlotSize
+	}
+	_, err := NewFreeList(cfg)
+	if err == nil {
+		t.Fatal("expected error for SlabSize < SlotSize")
+	}
+}
+
+func TestNewFreeListPreallocRollback(t *testing.T) {
+	// PoolSize < SlabSize so reserve fails in growSlab during Prealloc.
+	cfg := FreeListConfig{
+		PoolSize:  64 * 1024, // 64KB
+		SlotSize:  64,
+		SlabSize:  128 * 1024, // 128KB > PoolSize
+		SlabCount: 1,
+		Prealloc:  true,
+	}
+	_, err := NewFreeList(cfg)
+	if err == nil {
+		t.Fatal("expected error for Prealloc with SlabSize > PoolSize")
+	}
+}
+
+func TestNewFreeListHugepageValidation(t *testing.T) {
+	if HugepageSize == 0 {
+		t.Skip("HugepageSize is 0 — huge page validation not testable on this platform")
+	}
+	cfg := FreeListConfig{
+		PoolSize:     64 * 1024 * 1024,
+		SlotSize:     64,
+		SlabSize:     HugepageSize + 1, // not a multiple
+		SlabCount:    1,
+		UseHugePages: true,
+	}
+	_, err := NewFreeList(cfg)
+	if err == nil {
+		t.Fatal("expected error for SlabSize not a multiple of HugepageSize")
+	}
+}
+
+func TestNewFreeListSlotSizeMinimum(t *testing.T) {
+	// SlotSize < 32 should be clamped to 32, not error.
+	cfg := FreeListConfig{
+		PoolSize: 64 * 1024,
+		SlotSize: 16,
+		SlabSize: 4096,
+	}
+	fl, err := NewFreeList(cfg)
+	if err != nil {
+		t.Fatalf("NewFreeList: %v", err)
+	}
+	defer fl.Free()
+	if fl.cfg.SlotSize != 32 {
+		t.Errorf("SlotSize = %d, want 32 (clamped from 16)", fl.cfg.SlotSize)
+	}
+}

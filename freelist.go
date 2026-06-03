@@ -250,6 +250,7 @@ func (fl *FreeList) reserve(size uint64) bool {
 // hitting an empty freelist simultaneously), this causes redundant
 // mmap+munmap pairs. This is a deliberate tradeoff — the double-check inside
 // the lock discards redundant slabs, and the window is brief in practice.
+//go:nocheckptr
 func (fl *FreeList) growSlab() error {
 	slabSize := fl.cfg.SlabSize
 	if !fl.reserve(slabSize) {
@@ -335,11 +336,13 @@ const (
 	ptrMask  = (1 << 48) - 1
 )
 
+//go:nocheckptr
 func packTaggedPtr(ptr unsafe.Pointer, gen uint16) uint64 {
 	p := uintptr(ptr)
 	return (uint64(p) & ptrMask) | (uint64(gen) << tagShift)
 }
 
+//go:nocheckptr
 func unpackPtr(tagged uint64) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(tagged & ptrMask))
 }
@@ -358,6 +361,7 @@ func unpackStructIdx(meta uint32) int32  { return int32(meta & 0x00FFFFFF) }
 // pushFree pushes a slot onto the free list. structIdx is the slab's index
 // in slabStructs, embedded at slot offset 24 as packed metadata so Allocate
 // can resolve it without a lock or binary search.
+//go:nocheckptr
 func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 	for {
 		old := fl.head.Load()
@@ -381,6 +385,7 @@ func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 // fails due to tag mismatch, causing a retry. This stale read is harmless
 // (8-byte aligned read on off-heap memory) and is correct Treiber stack
 // behavior — the CAS validates consistency before returning.
+//go:nocheckptr
 func (fl *FreeList) popFree() unsafe.Pointer {
 	for {
 		old := fl.head.Load()
@@ -424,6 +429,7 @@ func (fl *FreeList) batchPop(buf []unsafe.Pointer) int {
 // Accounting is batched: allocated counter and allocSeq are updated once for
 // the batch, not per slot. slotGen is still set per slot (unavoidable).
 // Zero heap allocations — caller provides the slots buffer.
+//go:nocheckptr
 func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
 	if len(slots) == 0 {
 		return 0, nil
@@ -488,6 +494,7 @@ func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) u
 // Reads the owning structIdx from slot bytes [8:12] — embedded by pushFree —
 // to resolve the slab without a lock or binary search. This keeps the hot
 // path lock-free and independent of slab count.
+//go:nocheckptr
 func (fl *FreeList) Allocate() ([]byte, error) {
 	if fl.freed.Load() {
 		return nil, ErrFreelistFreed
@@ -528,6 +535,7 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 }
 
 // Deallocate returns a slot to the free list.
+//go:nocheckptr
 func (fl *FreeList) Deallocate(slot []byte) error {
 	if len(slot) == 0 || uint64(len(slot)) != fl.cfg.SlotSize {
 		return ErrInvalidDeallocation

@@ -492,3 +492,96 @@ growth.
 | G2 | Phase 1 | BatchAllocate CONFIRMED | ~2× per-slot throughput, batch size 32 |
 | G3 | Phase 1→2 | Current-shard routing | Ring buffer built, proved fragile, removed |
 | G4 | Phase 4 | Linear scan | H ≤ 32 for typical deployments; SIMD not needed (§7.2) |
+
+---
+
+## 7.1 — Slabby vs Memory Competition Benchmarks
+
+**Setup:** Head-to-head comparison across 5 graph-engine workloads. Apple M2, 8 cores.
+**slabby** uses `slabby.New(size, capacity, WithHeapFallback())`. **memory** uses
+`ShardedFreeList` with per-workload SlotSize, Prealloc=true, NumShards=4-64.
+
+### BFS Buffer Get/Put Sequential
+
+Allocate 2 buffers (128KB bitset + 64KB frontier), touch a byte, deallocate.
+One `b.Loop()` iteration = 2× Allocate + 2× Deallocate.
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| slabby | 1,027 | 0 | 0 |
+| memory | 46.5 | 0 | 0 |
+| **Delta** | **22.1x faster** | | **zero heap both** |
+
+Per-individual-op: memory ~11.6 ns (consistent with ShardedFreeList hot-path benchmark at 12 ns/op),
+slabby ~257 ns (large 128KB slot size dominates).
+
+### BFS Buffer Get/Put Concurrent
+
+8 goroutines (`b.RunParallel`), same workload: allocate bitset+frontier, touch, deallocate.
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| slabby | 293.7 | 106 | 0 |
+| memory | 134.3 | 0 | 0 |
+| **Delta** | **2.2x faster** | | **zero heap** |
+
+### Edge Bulk Alloc (1M edges, 80B slots)
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| slabby | 223,183,520,708 | 110,875,128 | 1,000,378 |
+| memory | 281,681,917 | 24,007,536 | 19 |
+| **Delta** | **792x faster** | **4.6x less heap** | **52,650x fewer allocs** |
+
+**slabby hit full heap fallback** — 110MB heap allocated, 1M allocs (one per edge + SlabRef overhead).
+**memory** had 0 per-slot allocs; the 24MB is from the `make([][]byte, 1M)` slice header array
+(1M × 24 bytes = 24MB). Actual edge data is entirely off-heap (mmap'd).
+
+### Edge Table Page Bulk (128K pages, 4KB slots, 512MB total)
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| slabby | 29,753,171,000 | 16,813,024 | 131,249 |
+| memory | 146,511,125 | 3,150,432 | 16 |
+| **Delta** | **203x faster** | **5.3x less heap** | **8,200x fewer allocs** |
+
+**slabby hit heap fallback** — 16.8MB heap + 131K allocs.
+**memory** had 0 per-slot allocs; the 3.2MB is from the `make([][]byte, 128K)` slice header array.
+All 512MB of page data is off-heap (mmap'd, invisible to Go GC).
+
+### Concurrent AddEdge (8 workers, 1M edges total)
+
+| Allocator | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| slabby | 272,691,470,042 | 107,868,928 | 1,000,703 |
+| memory | 300,775,500 | 24,061,600 | 54 |
+| **Delta** | **907x faster** | **4.5x less heap** | **18,530x fewer allocs** |
+
+**slabby** again hit complete heap fallback — 108MB heap, 1M allocs. 8 workers contending on
+a shared allocator with 1M capacity saturated the slab pool instantly; every subsequent
+allocation fell through to the Go heap. The 272-second runtime is dominated by GC scans
+over 108MB of live heap.
+
+**memory** had 0 per-slot allocs; the 24MB is from `make([][]byte, 1M)` slice headers.
+All 1M edges (80MB) are off-heap, invisible to Go GC. 54 allocs from goroutine/channel
+setup in the benchmark scaffolding, not the allocator.
+
+### Summary Table
+
+| Bench | slabby ns/op | memory ns/op | slabby allocs | memory allocs | Winner |
+|-------|-------------|-------------|---------------|---------------|--------|
+| BFS GetPut Seq | 1,027 | 46.5 | 0 | 0 | memory 22x |
+| BFS GetPut Conc | 293.7 | 134.3 | 0 | 0 | memory 2.2x |
+| Edge Bulk 1M | 223,183,520,708 | 281,681,917 | 1,000,378 | 19 | memory **792x** |
+| Page Bulk 128K | 29,753,171,000 | 146,511,125 | 131,249 | 16 | memory **203x** |
+| AddEdge 8 Work | 272,691,470,042 | 300,775,500 | 1,000,703 | 54 | memory **907x** |
+
+**Notes:**
+- BFS ns/op = one `b.Loop()` iteration (2× Allocate + 2× Deallocate). Per-individual-op: memory ~11.6ns, slabby ~257ns.
+- Bulk ns/op = one `b.Loop()` iteration (1× Allocate for the full batch + 1× Deallocate for the full batch, held in memory simultaneously). Per-slot: divide by count (1M or 128K).
+
+**Key findings:**
+- **BFS buffer pool**: memory wins by 2-22× with zero heap. Slabby is viable at sub-µs concurrent (294 ns).
+- **Bulk edge/page allocation**: slabby's "heap fallback" pathology confirmed — 203-907× slower with 100K-1M heap allocations. Every overflow hits the Go heap.
+- **Zero heap on all paths**: memory has 0 allocs/op on BFS and 0 per-slot allocs on bulk. Slabby hits 0 on BFS (pool fits) but 100K-1M on bulk (pool exhausts).
+- **Decision**: edges and pages stay on ShardedFreeList. BFS buffers could use either; the 2-22x gap favors memory but slabby's sub-µs latency is acceptable for the buffer pool layer.

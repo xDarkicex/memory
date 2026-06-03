@@ -30,6 +30,9 @@ type shardCache struct {
 	len  atomic.Int32
 }
 
+// push is documented in the shardCache type comment.
+//
+//go:nocheckptr
 func (c *shardCache) push(ptr unsafe.Pointer) bool {
 	if c.len.Load() >= lifoCap {
 		return false
@@ -46,6 +49,12 @@ func (c *shardCache) push(ptr unsafe.Pointer) bool {
 	}
 }
 
+// pop speculatively reads ptr->next before the CAS validates ownership.
+// Between the head load and the read, the node may have been recycled and
+// its offset 0 overwritten with non-pointer user data. The CAS catches this
+// (retries on mismatch), but checkptr would panic on the stale intermediate.
+//
+//go:nocheckptr
 func (c *shardCache) pop() unsafe.Pointer {
 	for {
 		old := c.head.Load()
@@ -76,6 +85,9 @@ type freshCache struct {
 	len  atomic.Int32
 }
 
+// push is documented in the freshCache type comment.
+//
+//go:nocheckptr
 func (c *freshCache) push(ptr unsafe.Pointer) bool {
 	if c.len.Load() >= batchSize {
 		return false
@@ -92,6 +104,10 @@ func (c *freshCache) push(ptr unsafe.Pointer) bool {
 	}
 }
 
+// pop speculatively reads ptr->next before the CAS validates ownership.
+// See shardCache.pop for the rationale on go:nocheckptr.
+//
+//go:nocheckptr
 func (c *freshCache) pop() unsafe.Pointer {
 	for {
 		old := c.head.Load()

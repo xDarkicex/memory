@@ -2,6 +2,7 @@ package memory
 
 import (
 	"testing"
+	"unsafe"
 )
 
 func TestShardedFreeListBasicLifecycle(t *testing.T) {
@@ -203,4 +204,222 @@ func TestShardedFreeListExhaustion(t *testing.T) {
 	if len(slots) == 0 {
 		t.Fatal("expected at least one allocation before exhaustion")
 	}
+}
+
+func TestNewShardedFreeListPowerOfTwoRounding(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 1024 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 64 * 1024
+
+	// 5 is not a power of 2; should round up to 8.
+	sfl, err := NewShardedFreeList(cfg, 5)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	if sfl.numShards != 8 {
+		t.Errorf("numShards = %d, want 8 (rounded from 5)", sfl.numShards)
+	}
+
+	// Negative numShards should default to 64.
+	sfl2, err := NewShardedFreeList(cfg, -1)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList with -1: %v", err)
+	}
+	defer sfl2.Free()
+	if sfl2.numShards != 64 {
+		t.Errorf("numShards = %d, want 64", sfl2.numShards)
+	}
+
+	// Zero numShards should default to 64.
+	sfl3, err := NewShardedFreeList(cfg, 0)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList with 0: %v", err)
+	}
+	defer sfl3.Free()
+	if sfl3.numShards != 64 {
+		t.Errorf("numShards = %d, want 64", sfl3.numShards)
+	}
+}
+
+func TestNewShardedFreeListErrorPropagation(t *testing.T) {
+	// SlabSize < SlotSize causes NewFreeList to fail.
+	cfg := FreeListConfig{
+		PoolSize: 1024 * 1024,
+		SlotSize: 4096,
+		SlabSize: 64,
+	}
+	_, err := NewShardedFreeList(cfg, 4)
+	if err == nil {
+		t.Fatal("expected error propagation from NewFreeList")
+	}
+}
+
+func TestShardedFreeListInvalidDeallocation(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	if err := sfl.Deallocate(nil); err != ErrInvalidDeallocation {
+		t.Errorf("nil slice: got %v, want ErrInvalidDeallocation", err)
+	}
+	if err := sfl.Deallocate([]byte{}); err != ErrInvalidDeallocation {
+		t.Errorf("empty slice: got %v, want ErrInvalidDeallocation", err)
+	}
+	// Wrong size
+	if err := sfl.Deallocate(make([]byte, 32)); err != ErrInvalidDeallocation {
+		t.Errorf("wrong size: got %v, want ErrInvalidDeallocation", err)
+	}
+}
+
+func TestShardedFreeListRetireInvalid(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	if err := sfl.Retire(nil); err != ErrInvalidDeallocation {
+		t.Errorf("nil slice: got %v, want ErrInvalidDeallocation", err)
+	}
+	if err := sfl.Retire(make([]byte, 32)); err != ErrInvalidDeallocation {
+		t.Errorf("wrong size: got %v, want ErrInvalidDeallocation", err)
+	}
+}
+
+func TestShardedFreeListRetireDoubleRetire(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	slot, err := sfl.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	if err := sfl.Retire(slot); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	// Second retire must fail
+	if err := sfl.Retire(slot); err == nil {
+		t.Fatal("expected double-retire error")
+	}
+}
+
+func TestShardedFreeListDeallocateSlowPath(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	slot, err := sfl.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+
+	// Corrupt the metadata at offset 40 to force the slow path (binary search).
+	*(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), 40)) = 0xFFFFFFFF
+
+	if err := sfl.Deallocate(slot); err != nil {
+		t.Fatalf("Deallocate with corrupted metadata: %v", err)
+	}
+}
+
+func TestShardedFreeListForceReclamation(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 2)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	// Allocate all slots, retire them (goes to Hyaline batches), then
+	// try to allocate more to trigger forceReclamation.
+	var slots [][]byte
+	for {
+		slot, err := sfl.Allocate()
+		if err != nil {
+			break
+		}
+		slots = append(slots, slot)
+	}
+	if len(slots) == 0 {
+		t.Fatal("expected at least one allocation")
+	}
+
+	// Retire all slots — they go to Hyaline batches, not directly back.
+	for _, s := range slots {
+		if err := sfl.Retire(s); err != nil {
+			t.Fatalf("Retire: %v", err)
+		}
+	}
+
+	// Enter/Leave to drain Hyaline and reclaim slots.
+	sfl.HyalineEnter(0)
+	sfl.HyalineLeave(0)
+
+	// After Hyaline reclamation, we should be able to allocate again.
+	_, err = sfl.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate after reclamation: %v", err)
+	}
+}
+
+func TestShardedFreeListHyalineEnterLeave(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatalf("NewShardedFreeList: %v", err)
+	}
+	defer sfl.Free()
+
+	// Enter and Leave on the same shard should not panic.
+	sfl.HyalineEnter(0)
+	sfl.HyalineLeave(0)
+
+	// Multiple enters/leaves.
+	sfl.HyalineEnter(1)
+	sfl.HyalineEnter(2)
+	sfl.HyalineLeave(1)
+	sfl.HyalineLeave(2)
 }

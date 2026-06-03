@@ -1141,11 +1141,23 @@ func BenchmarkFreeListVsPool_64B(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 
+		// Pool has no per-allocation free — only bulk Reset(). Reset
+		// periodically before pool exhausts to keep the microbenchmark
+		// bounded while still measuring the hot allocation path.
+		resetEvery := uint64(cfg.PoolSize / (64 * 2)) // reset at ~50% capacity
+		var count uint64
 		for b.Loop() {
+			if count >= resetEvery {
+				pool.Reset()
+				b.StopTimer()
+				count = 0
+				b.StartTimer()
+			}
 			_, err := pool.Allocate(64)
 			if err != nil {
 				b.Fatal(err)
 			}
+			count++
 		}
 	})
 }

@@ -497,3 +497,389 @@ func TestCompetitionSummary(t *testing.T) {
 ║    Bulk       — batch allocate/deallocate throughput         ║
 ╚══════════════════════════════════════════════════════════════╝`)
 }
+
+// ---------------------------------------------------------------------------
+// 9. BFS Buffer benchmarks — Get/Put pattern, fixed-size large buffers
+// ---------------------------------------------------------------------------
+
+const (
+	bfsBitsetSize    = 131072
+	bfsFrontierSize  = 65536
+	bfsBitsetSlots   = 8
+	bfsFrontierSlots = 8
+)
+
+func newBFSBitsetSlabby(tb testing.TB) *slabby.Slabby {
+	tb.Helper()
+	sl, err := slabby.New(bfsBitsetSize, bfsBitsetSlots)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sl.Close() })
+	return sl
+}
+
+func newBFSFrontierSlabby(tb testing.TB) *slabby.Slabby {
+	tb.Helper()
+	sl, err := slabby.New(bfsFrontierSize, bfsFrontierSlots)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sl.Close() })
+	return sl
+}
+
+func newBFSBitsetMemory(tb testing.TB) *memory.ShardedFreeList {
+	tb.Helper()
+	cfg := memory.DefaultFreeListConfig()
+	cfg.SlotSize = bfsBitsetSize
+	cfg.SlabSize = 2 * 1024 * 1024
+	cfg.SlabCount = bfsBitsetSlots
+	cfg.PoolSize = uint64(bfsBitsetSlots+2) * cfg.SlabSize
+	cfg.Prealloc = true
+	sfl, err := memory.NewShardedFreeList(cfg, 4)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sfl.Free() })
+	return sfl
+}
+
+func newBFSFrontierMemory(tb testing.TB) *memory.ShardedFreeList {
+	tb.Helper()
+	cfg := memory.DefaultFreeListConfig()
+	cfg.SlotSize = bfsFrontierSize
+	cfg.SlabSize = 1024 * 1024
+	cfg.SlabCount = bfsFrontierSlots
+	cfg.PoolSize = uint64(bfsFrontierSlots+2) * cfg.SlabSize
+	cfg.Prealloc = true
+	sfl, err := memory.NewShardedFreeList(cfg, 4)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sfl.Free() })
+	return sfl
+}
+
+func BenchmarkBFSBuffer_GetPut_Sequential(b *testing.B) {
+	b.Run("slabby", func(b *testing.B) {
+		bitset := newBFSBitsetSlabby(b)
+		frontier := newBFSFrontierSlabby(b)
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			ref1 := bitset.MustAllocate()
+			data1 := ref1.GetBytes()
+			data1[0] = 1
+
+			ref2 := frontier.MustAllocate()
+			data2 := ref2.GetBytes()
+			data2[0] = 1
+
+			bitset.Deallocate(ref1)
+			frontier.Deallocate(ref2)
+		}
+	})
+
+	b.Run("memory", func(b *testing.B) {
+		bitset := newBFSBitsetMemory(b)
+		frontier := newBFSFrontierMemory(b)
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			slot1, _ := bitset.Allocate()
+			slot2, _ := frontier.Allocate()
+			slot1[0] = 1
+			slot2[0] = 1
+			bitset.Deallocate(slot1)
+			frontier.Deallocate(slot2)
+		}
+	})
+}
+
+func BenchmarkBFSBuffer_GetPut_Concurrent(b *testing.B) {
+	b.Run("slabby", func(b *testing.B) {
+		// Capacity must be large enough for GOMAXPROCS concurrent goroutines
+		// each holding 2 buffers (bitset + frontier) simultaneously.
+		concurrentSlots := 128
+		bitset, _ := slabby.New(bfsBitsetSize, concurrentSlots, slabby.WithHeapFallback())
+		frontier, _ := slabby.New(bfsFrontierSize, concurrentSlots, slabby.WithHeapFallback())
+		defer bitset.Close()
+		defer frontier.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				ref1 := bitset.MustAllocate()
+				data1 := ref1.GetBytes()
+				data1[0] = byte(i)
+
+				ref2 := frontier.MustAllocate()
+				data2 := ref2.GetBytes()
+				data2[0] = byte(i)
+
+				bitset.Deallocate(ref1)
+				frontier.Deallocate(ref2)
+				i++
+			}
+		})
+	})
+
+	b.Run("memory", func(b *testing.B) {
+		bitset := newBFSBitsetMemory(b)
+		frontier := newBFSFrontierMemory(b)
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				slot1, _ := bitset.Allocate()
+				slot2, _ := frontier.Allocate()
+				slot1[0] = byte(i)
+				slot2[0] = byte(i)
+				bitset.Deallocate(slot1)
+				frontier.Deallocate(slot2)
+				i++
+			}
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 10. Edge bulk allocation benchmarks
+// ---------------------------------------------------------------------------
+
+const (
+	edgeSlotSize   = 80
+	edgeAllocCount = 1000000
+)
+
+func BenchmarkEdgeBulkAlloc_1M(b *testing.B) {
+	b.Run("slabby", func(b *testing.B) {
+		sl, err := slabby.New(edgeSlotSize, edgeAllocCount,
+			slabby.WithHeapFallback(),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sl.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			refs := make([]*slabby.SlabRef, edgeAllocCount)
+			for i := range refs {
+				refs[i] = sl.MustAllocate()
+				data := refs[i].GetBytes()
+				data[0] = byte(i)
+			}
+			for _, ref := range refs {
+				sl.Deallocate(ref)
+			}
+		}
+	})
+
+	b.Run("memory", func(b *testing.B) {
+		cfg := memory.DefaultFreeListConfig()
+		cfg.SlotSize = edgeSlotSize
+		cfg.SlabSize = 2 * 1024 * 1024
+		cfg.SlabCount = 64
+		cfg.PoolSize = uint64(edgeAllocCount)*edgeSlotSize + 16*1024*1024
+		cfg.Prealloc = true
+		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sfl.Free()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			slots := make([][]byte, edgeAllocCount)
+			for i := range slots {
+				slot, err := sfl.Allocate()
+				if err != nil {
+					b.Fatal(err)
+				}
+				slot[0] = byte(i)
+				slots[i] = slot
+			}
+			for _, slot := range slots {
+				sfl.Deallocate(slot)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 11. Edge table page bulk benchmarks (4KB pages)
+// ---------------------------------------------------------------------------
+
+const (
+	pageSlotSize   = 4096
+	pageAllocCount = 128 * 1024
+)
+
+func BenchmarkEdgeTablePageBulk_128K(b *testing.B) {
+	b.Run("slabby", func(b *testing.B) {
+		sl, err := slabby.New(pageSlotSize, pageAllocCount,
+			slabby.WithHeapFallback(),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sl.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			refs := make([]*slabby.SlabRef, pageAllocCount)
+			for i := range refs {
+				refs[i] = sl.MustAllocate()
+				data := refs[i].GetBytes()
+				data[0] = byte(i)
+			}
+			for _, ref := range refs {
+				sl.Deallocate(ref)
+			}
+		}
+	})
+
+	b.Run("memory", func(b *testing.B) {
+		cfg := memory.DefaultFreeListConfig()
+		cfg.SlotSize = pageSlotSize
+		cfg.SlabSize = 16 * 1024 * 1024
+		cfg.SlabCount = 32
+		cfg.PoolSize = uint64(pageAllocCount)*pageSlotSize + 64*1024*1024
+		cfg.Prealloc = true
+		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sfl.Free()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			slots := make([][]byte, pageAllocCount)
+			for i := range slots {
+				slot, err := sfl.Allocate()
+				if err != nil {
+					b.Fatal(err)
+				}
+				slot[0] = byte(i)
+				slots[i] = slot
+			}
+			for _, slot := range slots {
+				sfl.Deallocate(slot)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 12. Concurrent AddEdge — 8 workers, graph hot path
+// ---------------------------------------------------------------------------
+
+const (
+	concurrentEdgeWorkers     = 8
+	concurrentEdgesPerWorker  = 125000
+)
+
+func BenchmarkConcurrentAddEdge_8Workers(b *testing.B) {
+	b.Run("slabby", func(b *testing.B) {
+		sl, err := slabby.New(edgeSlotSize, concurrentEdgeWorkers*concurrentEdgesPerWorker,
+			slabby.WithHeapFallback(),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sl.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			var wg sync.WaitGroup
+			wg.Add(concurrentEdgeWorkers)
+			allRefs := make([][]*slabby.SlabRef, concurrentEdgeWorkers)
+			for w := 0; w < concurrentEdgeWorkers; w++ {
+				go func(workerID int) {
+					defer wg.Done()
+					refs := make([]*slabby.SlabRef, concurrentEdgesPerWorker)
+					for i := range refs {
+						refs[i] = sl.MustAllocate()
+						data := refs[i].GetBytes()
+						data[0] = byte(workerID)
+						data[1] = byte(i)
+					}
+					allRefs[workerID] = refs
+				}(w)
+			}
+			wg.Wait()
+			for _, refs := range allRefs {
+				for _, ref := range refs {
+					sl.Deallocate(ref)
+				}
+			}
+		}
+	})
+
+	b.Run("memory", func(b *testing.B) {
+		cfg := memory.DefaultFreeListConfig()
+		cfg.SlotSize = edgeSlotSize
+		cfg.SlabSize = 2 * 1024 * 1024
+		cfg.SlabCount = 64
+		cfg.PoolSize = uint64(concurrentEdgeWorkers*concurrentEdgesPerWorker)*edgeSlotSize + 32*1024*1024
+		cfg.Prealloc = true
+		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer sfl.Free()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for b.Loop() {
+			var wg sync.WaitGroup
+			wg.Add(concurrentEdgeWorkers)
+			allSlots := make([][][]byte, concurrentEdgeWorkers)
+			for w := 0; w < concurrentEdgeWorkers; w++ {
+				go func(workerID int) {
+					defer wg.Done()
+					slots := make([][]byte, concurrentEdgesPerWorker)
+					for i := range slots {
+						slot, err := sfl.Allocate()
+						if err != nil {
+							panic(err)
+						}
+						slot[0] = byte(workerID)
+						slot[1] = byte(i)
+						slots[i] = slot
+					}
+					allSlots[workerID] = slots
+				}(w)
+			}
+			wg.Wait()
+			for _, batch := range allSlots {
+				for _, slot := range batch {
+					sfl.Deallocate(slot)
+				}
+			}
+		}
+	})
+}

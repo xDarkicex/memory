@@ -80,6 +80,7 @@ func NewShardedFreeList(cfg FreeListConfig, numShards int) (*ShardedFreeList, er
 
 // activateSlot sets the double-free guard for a slot popped from recycled.
 // The slot's metadata at offset 40 contains structIdx in the lower 24 bits.
+//go:nocheckptr
 func (sfl *ShardedFreeList) activateSlot(ptr unsafe.Pointer) {
 	meta := *(*uint32)(unsafe.Add(ptr, 40))
 	structIdx := int(unpackStructIdx(meta))
@@ -89,6 +90,7 @@ func (sfl *ShardedFreeList) activateSlot(ptr unsafe.Pointer) {
 }
 
 // setHomeShard writes the shard index into offset 40 without disturbing structIdx.
+//go:nocheckptr
 func setHomeShard(ptr unsafe.Pointer, shardIdx uint8) {
 	meta := *(*uint32)(unsafe.Add(ptr, 40))
 	*(*uint32)(unsafe.Add(ptr, 40)) = packSlotMeta(unpackStructIdx(meta), shardIdx)
@@ -97,6 +99,7 @@ func setHomeShard(ptr unsafe.Pointer, shardIdx uint8) {
 // hyalineFreeFn pushes all nodes in a freed Hyaline batch back to the global
 // FreeList. Each node's structIdx is read from offset 40 (preserved during
 // Hyaline operations at offsets 0, 8, 16, 24, 32).
+//go:nocheckptr
 func (sfl *ShardedFreeList) hyalineFreeFn(batchHead unsafe.Pointer) {
 	// Start from batch.first (stored at offset 32 of batch head after flush).
 	first := ptrAt(batchHead, 32) // offset 32: first_node → batch.first
@@ -124,6 +127,7 @@ func (sfl *ShardedFreeList) HyalineLeave(slotIdx int) {
 }
 
 // Allocate returns a fixed-size slot from the sharded allocator.
+//go:nocheckptr
 func (sfl *ShardedFreeList) Allocate() ([]byte, error) {
 	gen := sfl.gen.Load()
 	startShardIdx := getShard(sfl.numShards)
@@ -204,6 +208,7 @@ retry:
 }
 
 // Deallocate returns a slot to the sharded caches.
+//go:nocheckptr
 func (sfl *ShardedFreeList) Deallocate(slot []byte) error {
 	if len(slot) == 0 || uint64(len(slot)) != sfl.cfg.SlotSize {
 		return ErrInvalidDeallocation
@@ -271,6 +276,7 @@ func (sfl *ShardedFreeList) Deallocate(slot []byte) error {
 // The slot is added to the calling shard's retirement batch. When the batch
 // reaches the Hyaline threshold, it flushes to the global header. Reclamation
 // happens when all goroutines that entered the corresponding slots have left.
+//go:nocheckptr
 func (sfl *ShardedFreeList) Retire(slot []byte) error {
 	if len(slot) == 0 || uint64(len(slot)) != sfl.cfg.SlotSize {
 		return ErrInvalidDeallocation

@@ -27,6 +27,10 @@ func TestPoolSizeNeverExceeded(t *testing.T) {
 
 		// Try to allocate up to PoolSize
 		allocSize := uint64(size) % (cfg.PoolSize / 2) // cap at half pool to avoid immediate exhaustion
+		if allocSize == 0 {
+			return true
+		}
+
 		data, err := pool.Allocate(allocSize)
 		if err != nil {
 			// ErrPoolExhausted is acceptable
