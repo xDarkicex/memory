@@ -63,7 +63,7 @@ func (c *shardCache) pop() unsafe.Pointer {
 			return nil
 		}
 		newTag := unpackTag(old) + 1
-		next := unsafe.Pointer(uintptr(atomic.LoadUint64((*uint64)(ptr))))
+		next := unpackPtr(atomic.LoadUint64((*uint64)(ptr)))
 		newTagged := packTaggedPtr(next, newTag)
 		if c.head.CompareAndSwap(old, newTagged) {
 			n := c.len.Add(-1)
@@ -116,7 +116,7 @@ func (c *freshCache) pop() unsafe.Pointer {
 			return nil
 		}
 		newTag := unpackTag(old) + 1
-		next := unsafe.Pointer(uintptr(atomic.LoadUint64((*uint64)(ptr))))
+		next := unpackPtr(atomic.LoadUint64((*uint64)(ptr)))
 		newTagged := packTaggedPtr(next, newTag)
 		if c.head.CompareAndSwap(old, newTagged) {
 			n := c.len.Add(-1)

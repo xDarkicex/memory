@@ -76,7 +76,7 @@ func hyalineEnter(h *hyalineHeader, slotIdx int) {
 // pointers stored in off-heap node metadata.
 //go:nocheckptr
 func ptrAt(ptr unsafe.Pointer, offset uintptr) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(*(*uint64)(unsafe.Add(ptr, offset))))
+	return unsafe.Add(nil, uintptr(*(*uint64)(unsafe.Add(ptr, offset))))
 }
 
 // storePtr writes a pointer as uint64 at ptr+offset.
@@ -98,7 +98,7 @@ func hyalineLeave(h *hyalineHeader, slotIdx int, freeFn func(batchHead unsafe.Po
 	var freeList unsafe.Pointer
 	for curr != 0 {
 		// Materialize node pointer from the slot's uint64 value.
-		nodePtr := unsafe.Pointer(uintptr(curr))
+		nodePtr := unsafe.Add(nil, uintptr(curr))
 
 		next := *(*uint64)(nodePtr)                // offset 0: next in chain
 		batchHead := ptrAt(nodePtr, 8)             // offset 8: batch_head → batch head

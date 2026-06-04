@@ -344,7 +344,7 @@ func packTaggedPtr(ptr unsafe.Pointer, gen uint16) uint64 {
 
 //go:nocheckptr
 func unpackPtr(tagged uint64) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(tagged & ptrMask))
+	return unsafe.Add(nil, uintptr(tagged&ptrMask))
 }
 
 func unpackTag(tagged uint64) uint16 {
@@ -395,7 +395,7 @@ func (fl *FreeList) popFree() unsafe.Pointer {
 		}
 		newTag := unpackTag(old) + 1
 
-		next := unsafe.Pointer(uintptr(atomic.LoadUint64((*uint64)(ptr))))
+		next := unpackPtr(atomic.LoadUint64((*uint64)(ptr)))
 
 		newTagged := packTaggedPtr(next, newTag)
 		if fl.head.CompareAndSwap(old, newTagged) {
