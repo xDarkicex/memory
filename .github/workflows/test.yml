@@ -19,9 +19,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run tests with coverage
+      - name: Run tests with coverage (exclude examples)
         run: |
-          go test -v -race -coverprofile=coverage.out -coverpkg=./... ./...
+          go test -v -race -coverprofile=coverage.out -coverpkg=./... $(go list ./... | grep -v /examples/)
+
+      - name: Run example tests
+        run: |
+          go test -v -race ./examples/...
 
       - name: Vet
         run: go vet ./...
