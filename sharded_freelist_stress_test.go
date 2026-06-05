@@ -800,7 +800,10 @@ func TestStressHammer(t *testing.T) {
 	}
 
 	// Progress reporter.
+	var reporterWg sync.WaitGroup
+	reporterWg.Add(1)
 	go func() {
+		defer reporterWg.Done()
 		for !done.Load() {
 			time.Sleep(1 * time.Second)
 			elapsed := time.Since(start)
@@ -890,6 +893,7 @@ func TestStressHammer(t *testing.T) {
 	time.Sleep(dur)
 	done.Store(true)
 	wg.Wait()
+		reporterWg.Wait()
 	elapsed := time.Since(start)
 
 	t.Logf("hammer finished: ops=%d (%.0f/s) errors=%d corruptions=%d elapsed=%v",

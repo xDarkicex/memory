@@ -58,12 +58,14 @@ Platform-specific code uses Go build tags:
 
 ### Slot metadata protocol (FreeList / ShardedFreeList)
 
-Each free slot stores:
-- **Offset 0**: next pointer (for intrusive Treiber stack / Hyaline node chain)
-- **Offset 8**: batch_link (Hyaline: link to batch head for reference counting)
-- **Offset 16**: refs (on batch head) / batch_next (on other nodes) — Hyaline reclamation
-- **Offset 24**: packed uint32 — `bits[0:24]` = slab struct index, `bits[24:32]` = home shard index (ShardedFreeList only)
+Each slot stores intrusive metadata at fixed offsets:
+- **Offset 0**: next pointer (uint64, Treiber stack link / Hyaline slot chain)
+- **Offset 8**: batch_head (uint64, Hyaline: pointer to batch head node)
+- **Offset 16**: batch_next (uint64, Hyaline: next node in same batch)
+- **Offset 24**: refs (int64, Hyaline: batch reference count, batch head only)
+- **Offset 32**: first_node (uint64, Hyaline: batch.first stored at flush, batch head only)
+- **Offset 40**: packed uint32 — `bits[0:24]` = slab struct index, `bits[24:32]` = home shard index (ShardedFreeList only)
 
-Total overhead: 28 bytes (padded to 32 for alignment). Minimum SlotSize: 32.
+Total overhead: 44 bytes (padded to 48 for alignment). Minimum SlotSize: 48.
 
-`pushFree` writes the metadata; `Allocate` reads structIdx from offset 24 to resolve the owning slab without locks or binary search. `Deallocate` uses O(log N) binary search over `slabBase` (sorted by mmap base address) as a fallback when offset 24 metadata is corrupted.
+`pushFree` writes the metadata at offset 40; `Allocate` reads structIdx from offset 40 to resolve the owning slab without locks or binary search. `Deallocate` uses O(log N) binary search over `slabBase` (sorted by mmap base address) as a fallback when offset 40 metadata is corrupted.

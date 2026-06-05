@@ -344,7 +344,7 @@ func packTaggedPtr(ptr unsafe.Pointer, gen uint16) uint64 {
 
 //go:nocheckptr
 func unpackPtr(tagged uint64) unsafe.Pointer {
-	return unsafe.Add(nil, uintptr(tagged&ptrMask))
+	return unsafe.Pointer(uintptr(tagged & ptrMask))
 }
 
 func unpackTag(tagged uint64) uint16 {

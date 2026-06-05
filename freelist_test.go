@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 // --- Lifecycle tests ---
@@ -279,6 +280,23 @@ func TestFreeListConcurrent(t *testing.T) {
 	want := uint64(goroutines*opsPerGoroutine) * fl.cfg.SlotSize
 	if stats.Allocated != want {
 		t.Errorf("post-cycle allocated = %d, want %d", stats.Allocated, want)
+	}
+}
+
+// TestPointerMaterializationRegression ensures that the raw pointer manipulation
+// correctly yields nil without suffering from Go 1.25 compiler SSA folding bugs.
+func TestPointerMaterializationRegression(t *testing.T) {
+	// A raw zero value should be safely cast back to a true nil
+	var val uint64 = 0
+	ptr := unsafe.Pointer(uintptr(val))
+	if ptr != nil {
+		t.Fatalf("materialized zero was not strictly nil: %p", ptr)
+	}
+
+	// Double check unpackPtr wrapper
+	uPtr := unpackPtr(0)
+	if uPtr != nil {
+		t.Fatalf("unpackPtr zero was not strictly nil: %p", uPtr)
 	}
 }
 
