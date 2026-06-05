@@ -30,7 +30,7 @@ jobs:
       - name: Vet (with waiver for intentional unsafe.Pointer materialization)
         run: |
           vet_output=$(go vet ./... 2>&1 || true)
-          filtered_output=$(echo "$vet_output" | grep -v "possible misuse of unsafe.Pointer" || true)
+          filtered_output=$(echo "$vet_output" | grep -v -E "possible misuse of unsafe.Pointer|^#" || true)
           if [ -n "$filtered_output" ]; then
             echo "$filtered_output"
             exit 1
