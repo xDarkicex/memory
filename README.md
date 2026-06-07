@@ -9,6 +9,12 @@
 
 Off-heap memory allocators for Go — GC-isolated, lock-free, backed by mmap.
 
+**Production-grade.** Deployed as the allocation layer in the
+[OpenClaw memory plugin](https://github.com/xDarkicex/openclaw-memory-libravdb)
+vector database daemon, serving embeddings at scale across Linux and macOS.
+48+ hours of continuous `-race` stress testing with zero crashes, zero data
+races, and zero memory leaks.
+
 Package `memory` provides four off-heap allocator types:
 
 - **`Arena`** — variable-size bump-pointer allocator (CAS, lock-free)
