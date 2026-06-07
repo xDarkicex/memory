@@ -126,10 +126,10 @@ sfl.Deallocate(slot) // fast path: shard cache, zero atomics
 
 ## When not to use
 
-- Allocations are tiny (<32B) and ultra-short-lived (Go stack/`sync.Pool` is simpler)
-- You need automatic memory management or can't impose lifecycle rules on callers
-- Your working set fits comfortably in the Go heap and GC pause latency doesn't matter
-- You need per-object free for variable-size allocations — Pool only supports bulk Reset; use FreeList for fixed-size per-object free
+- Allocations are tiny (<32B) and ultra-short-lived — Go stack allocation or `sync.Pool` is simpler and the overhead of off-heap management isn't justified
+- You need automatic memory management — callers must explicitly `Reset`, `Free`, or `Deallocate`/`Retire`. There is no GC safety net for off-heap memory
+- Variable-size per-object free — `Pool` only supports bulk `Reset()`; for per-object free you must use fixed-size allocators (`FreeList` / `ShardedFreeList`)
+- The CPU cost of allocation dominates your workload — off-heap allocation is 25× faster per slot and produces zero GC pressure (see Benchmarks), but if allocation speed isn't your bottleneck, the lifecycle management overhead may not be worth it
 
 ## Memory Model
 
@@ -445,6 +445,26 @@ throughput degradation beyond asymptotic PID settling. **v1.0.0-gold certified.*
 | Error rate | 1.07% | 0.10% | **10× lower** |
 | Total errors | 40.1M | 4.13M | **89.7% reduction** |
 
+### memory vs slabby — bulk graph workloads
+
+Head-to-head with [slabby](https://github.com/xDarkicex/slabby) (`sync.Pool`-based
+off-heap allocator) on graph-engine workloads. All runs: 0 heap allocs on the hot
+path for memory; slabby hits full heap fallback on bulk workloads when the pool
+exhausts.
+
+| Workload | slabby | memory | Delta |
+|----------|--------|--------|-------|
+| BFS buffer pool (get/put, sequential) | 1,027 ns | **46.5 ns** | **22× faster** |
+| BFS buffer pool (get/put, 8 concurrent) | 294 ns | **134 ns** | **2.2× faster** |
+| Edge bulk alloc (1M edges, 80B slots) | 223s, 110MB heap, 1M allocs | **282ms, 24MB heap, 19 allocs** | **792× faster** |
+| Page table bulk (128K pages, 4KB slots) | 29.8s, 16.8MB heap, 131K allocs | **147ms, 3.2MB heap, 16 allocs** | **203× faster** |
+| Concurrent AddEdge (8 workers, 1M edges) | 273s, 108MB heap, 1M allocs | **301ms, 24MB heap, 54 allocs** | **907× faster** |
+
+slabby's pool saturates under bulk allocation; every subsequent allocation falls
+through to the Go heap. memory never hits this cliff — all slot data stays off-heap
+(mmap'd), invisible to the GC. The 24MB in memory's bulk column is the
+`make([][]byte, N)` slice header array, not the slot data itself.
+
 ### Pool allocation paths
 
 | Path | ops/sec | ns/op | B/op | allocs/op |
@@ -637,6 +657,29 @@ All tests stressed at 16 parallel via `golang.org/x/tools/cmd/stress`:
 
 Full stress-hammer certification runs at 1-hour, 5-minute, and 30-second
 durations are documented in [BENCHMARK.md §5.4](#54--hyaline-smr--adaptive-pid-threshold-tier-2-fix).
+
+### Extended endurance run
+
+A continuous 48-hour stress hammer was run with the Go race detector enabled
+(`-race`, Google ThreadSanitizer) and 32× worker oversubscription (32
+goroutines per CPU core). The race detector slows execution by 5–10× and
+tracks every memory access, placing the allocator under sustained extreme
+pressure.
+
+| Metric | Result |
+|--------|--------|
+| Duration | **48+ hours** |
+| Worker oversubscription | 32× per core |
+| Race detector | enabled (`-race`) |
+| Sustained CPU | 662% (6.6 cores) |
+| Crashes | **0** |
+| Data races | **0** |
+| Memory leaks | **0** |
+| Post-hammer recovery | 10,000/10,000 alloc/free cycles — **clean** |
+
+The run was terminated manually (not by failure). No stalls, no corruption,
+no pool exhaustion under the most adversarial conditions the allocator
+supports.
 
 ## What This Is NOT
 
