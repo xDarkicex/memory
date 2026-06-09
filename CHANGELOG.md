@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [v1.0.2] — 2026-06-08
+
+### Fixed
+
+- **Goroutine leak in `ShardedFreeList`** — `Free()` and `Reset()` called
+  `cancel()` to signal the background PID controller goroutine but returned
+  without waiting for it to exit, triggering goleak detections. Added a
+  `pidDone` channel that the goroutine closes on exit; `Free()` and `Reset()`
+  now drain it before proceeding.
+
+- **`TestStressHammer` timeout under `-race`** — `growSlab()` held
+  `slabMu.Lock()` while pushing every slot in a new slab to the Treiber stack
+  (up to 32K CAS operations per 4MB slab). Under the race detector, each
+  instrumented CAS becomes pathologically slow, blocking all `Deallocate`
+  slow-path readers and starving the pool. Moved `slabMu.Unlock()` before the
+  push loop. No correctness impact: `Reset()` is already documented as not
+  concurrent-safe, and the double-check + lock still prevents duplicate slab
+  publishing.
+
+### Added
+
+- **Goleak tests** — `TestShardedFreeListPIDControllerFree` and
+  `TestShardedFreeListPIDControllerReset` verify no goroutine leaks after
+  `Free()` and `Reset()`.
+- `go.uber.org/goleak` test dependency.
+
 ### Fixed
 
 - **checkptr false positive** in Treiber stack speculative reads (`shard.go`,
