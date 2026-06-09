@@ -31,6 +31,7 @@ type ShardedFreeList struct {
 	gen       atomic.Uint64
 	hyHeader  hyalineHeader
 	cancel    context.CancelFunc
+	pidDone   chan struct{} // closed when runPIDController exits
 }
 
 type shard struct {
@@ -70,7 +71,8 @@ func NewShardedFreeList(cfg FreeListConfig, numShards int) (*ShardedFreeList, er
 		shards:    shards,
 		numShards: numShards,
 		cancel:    cancel,
-	}
+			pidDone:   make(chan struct{}),
+		}
 	hyalineHeaderInit(&sfl.hyHeader)
 	
 	go sfl.runPIDController(ctx)
@@ -340,6 +342,7 @@ func (sfl *ShardedFreeList) Retire(slot []byte) error {
 func (sfl *ShardedFreeList) Reset() {
 	if sfl.cancel != nil {
 		sfl.cancel()
+		<-sfl.pidDone
 	}
 	sfl.gen.Add(1)
 	sfl.global.Reset()
@@ -355,6 +358,7 @@ func (sfl *ShardedFreeList) Reset() {
 	// Restart the adaptive PID controller for the new lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
 	sfl.cancel = cancel
+	sfl.pidDone = make(chan struct{})
 	go sfl.runPIDController(ctx)
 }
 
@@ -362,6 +366,7 @@ func (sfl *ShardedFreeList) Reset() {
 func (sfl *ShardedFreeList) Free() error {
 	if sfl.cancel != nil {
 		sfl.cancel()
+		<-sfl.pidDone
 	}
 	sfl.gen.Add(1)
 	return sfl.global.Free()
@@ -396,6 +401,8 @@ func (sfl *ShardedFreeList) forceReclamation() {
 // runPIDController runs a background PI control loop to dynamically adjust
 // the hyaline batch flush threshold based on pool depth.
 func (sfl *ShardedFreeList) runPIDController(ctx context.Context) {
+	defer close(sfl.pidDone)
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 

@@ -3,6 +3,8 @@ package memory
 import (
 	"testing"
 	"unsafe"
+
+	"go.uber.org/goleak"
 )
 
 func TestShardedFreeListBasicLifecycle(t *testing.T) {
@@ -397,6 +399,57 @@ func TestShardedFreeListForceReclamation(t *testing.T) {
 	_, err = sfl.Allocate()
 	if err != nil {
 		t.Fatalf("Allocate after reclamation: %v", err)
+	}
+}
+
+func TestShardedFreeListPIDControllerFree(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sfl.Free(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShardedFreeListPIDControllerReset(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	sfl, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sfl.Free()
+
+	// Allocate some slots
+	for i := 0; i < 10; i++ {
+		if _, err := sfl.Allocate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sfl.Reset()
+
+	// Verify still functional after reset
+	slot, err := sfl.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slot) != int(cfg.SlotSize) {
+		t.Fatalf("expected slot size %d, got %d", cfg.SlotSize, len(slot))
 	}
 }
 
