@@ -303,17 +303,14 @@ func (fl *FreeList) growSlab() error {
 	}
 
 	fl.slabLen.Store(int32(idx + 1))
+	fl.slabMu.Unlock()
 
-	// Publish all slots onto the free list while still holding slabMu.
-	// This prevents Reset() from munmap'ing the slab mid-publish (SIGSEGV).
+	// Publish all slots onto the free list outside the lock.
 	// Reverse order so the first allocation gets the lowest-address slot.
-	// Each slot gets its owning structIdx embedded at offset 8.
 	for i := slots - 1; i >= 0; i-- {
 		ptr := unsafe.Add(unsafe.Pointer(&data[0]), uintptr(i)*uintptr(slotSize))
 		fl.pushFree(ptr, int32(idx))
 	}
-
-	fl.slabMu.Unlock()
 	return nil
 }
 
