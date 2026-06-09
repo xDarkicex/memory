@@ -557,9 +557,14 @@ regular mmap if unavailable. macOS ignores this flag.
 **PoolSize** is a hard limit on mmap'd bytes tracked via atomic `reserve()`.
 When exhausted, `Allocate` returns `ErrPoolExhausted`.
 
-**SlotSize** (FreeList/ShardedFreeList): Must be ≥ 32 bytes. The slot metadata
-(Hyaline chain pointers, batch references, struct index, shard index) occupies
-offsets 0–31. Offsets 32+ are usable payload.
+**SlotSize** (FreeList):
+Must be ≥ 32 bytes. The slot metadata (Treiber stack pointer at offset 0,
+struct index at offset 24) occupies offsets 0–31. Offsets 32+ are usable payload.
+
+**SlotSize** (ShardedFreeList):
+Must be ≥ 48 bytes. The slot metadata (Hyaline chain offsets 0/8/16/24/32,
+struct index + shard index packed at offset 40) occupies offsets 0–43. With
+8-byte alignment the minimum safe user-data offset is 48.
 
 ### ShardedFreeList shard count
 
