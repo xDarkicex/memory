@@ -488,7 +488,7 @@ func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) u
 
 // Allocate returns a fixed-size off-heap memory slot.
 //
-// Reads the owning structIdx from slot bytes [8:12] — embedded by pushFree —
+// Reads the owning structIdx from slot bytes [24:28] — embedded by pushFree —
 // to resolve the slab without a lock or binary search. This keeps the hot
 // path lock-free and independent of slab count.
 //go:nocheckptr
@@ -514,7 +514,7 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 			continue
 		}
 
-		// structIdx is embedded in the slot at offset 8 by pushFree.
+		// structIdx is embedded in the slot at offset 24 by pushFree.
 		// Read it directly — no lock, no binary search.
 		meta := *(*uint32)(unsafe.Add(ptr, 24))
 			structIdx := int(unpackStructIdx(meta))
@@ -540,7 +540,7 @@ func (fl *FreeList) Deallocate(slot []byte) error {
 
 	ptr := unsafe.Pointer(unsafe.SliceData(slot))
 
-	// Fast path: read structIdx from slot metadata at offset 8.
+	// Fast path: read structIdx from slot metadata at offset 24.
 	// Same field that pushFree writes and Allocate reads. Callers that
 	// don't overwrite the metadata region get O(1) lock-free deallocation.
 	var structIdx int

@@ -49,6 +49,8 @@ Platform-specific code uses Go build tags:
 - `pool.go` — `Pool` type (concurrent slab allocator)
 - `arena.go` — `Arena` type (bump-pointer allocator)
 - `freelist.go` — `FreeList` type (fixed-size lock-free allocator) + tagged pointer helpers
+- `freelist_helpers.go` — typed allocation helpers (`FreeListAlloc[T]`, `FreeListDealloc[T]`)
+- `hyaline.go` — Hyaline batch management for `ShardedFreeList`
 - `sharded_freelist.go` — `ShardedFreeList` (sharded wrapper around FreeList)
 - `shard.go` — per-shard data structures: `shardCache`, `freshCache`, `ringBuf`
 - `shard_hash.go` / `shard_procpin.go` — `getShard()` implementations
@@ -56,16 +58,29 @@ Platform-specific code uses Go build tags:
 - `watchdog.go` — Go heap pressure monitor (not related to off-heap mmap memory)
 - `memory_linux.go` / `memory_darwin.go` — platform-specific mmap + madvise
 
-### Slot metadata protocol (FreeList / ShardedFreeList)
+### Slot metadata protocol
 
-Each slot stores intrusive metadata at fixed offsets:
-- **Offset 0**: next pointer (uint64, Treiber stack link / Hyaline slot chain)
-- **Offset 8**: batch_head (uint64, Hyaline: pointer to batch head node)
-- **Offset 16**: batch_next (uint64, Hyaline: next node in same batch)
-- **Offset 24**: refs (int64, Hyaline: batch reference count, batch head only)
-- **Offset 32**: first_node (uint64, Hyaline: batch.first stored at flush, batch head only)
-- **Offset 40**: packed uint32 — `bits[0:24]` = slab struct index, `bits[24:32]` = home shard index (ShardedFreeList only)
+#### FreeList
 
-Total overhead: 44 bytes (padded to 48 for alignment). Minimum SlotSize: 48.
+Each slot stores intrusive metadata at fixed offsets within the slot:
+- **Offset 0**: next pointer (uint64, Treiber stack link)
+- **Offset 12**: `metaOffset` — typed user data begins here (`FreeListAlloc[T]` helpers)
+- **Offset 24**: packed uint32 — structIdx in bits 0-23 (homeShard always 0)
 
-`pushFree` writes the metadata at offset 40; `Allocate` reads structIdx from offset 40 to resolve the owning slab without locks or binary search. `Deallocate` uses O(log N) binary search over `slabBase` (sorted by mmap base address) as a fallback when offset 40 metadata is corrupted.
+Metadata at offset 24 lives inside the user data region (past `metaOffset=12`). Callers that preserve it get O(1) lock-free `Deallocate`; callers that overwrite it trigger the O(log N) binary search fallback over `slabBase`.
+
+Minimum SlotSize: **32** (enforced in `NewFreeList`).
+
+#### ShardedFreeList (Hyaline)
+
+Wraps a FreeList with per-shard caches and Hyaline batch metadata:
+- **Offset 0**: next pointer (uint64, slot chain link)
+- **Offset 8**: batch_head (uint64, pointer to batch head node)
+- **Offset 16**: batch_next (uint64, next node in same batch)
+- **Offset 24**: refs (int64, batch reference count; batch head only)
+- **Offset 32**: first_node (uint64, batch.first stored at flush; batch head only)
+- **Offset 40**: packed uint32 — bits 0-23 = slab struct index, bits 24-31 = home shard index
+
+Total Hyaline overhead: 44 bytes (padded to 48 for alignment). Minimum usable SlotSize: **48**.
+
+`pushFree` writes structIdx (+ homeShard for ShardedFreeList) at the metadata offset; `Allocate` and `Deallocate` read it to resolve the owning slab without locks or binary search. `Deallocate` falls back to O(log N) binary search over `slabBase` (sorted by mmap base address) when metadata is corrupted.

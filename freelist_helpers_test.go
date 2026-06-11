@@ -149,28 +149,30 @@ func TestFreeListAlloc_AfterFree(t *testing.T) {
 	}
 }
 
-func TestFreeListAlloc_MetadataNotCorrupted(t *testing.T) {
+func TestFreeListAlloc_DeallocFallbackOnCorruptedMetadata(t *testing.T) {
 	fl := testFreeList(t)
 
-	// Write to every byte of the user data region — must not corrupt metadata
-	// at offsets 0-11 (next pointer and struct index).
+	// Write 0xFF to every byte of user data. structIdx lives at slot offset 24
+	// which falls inside Payload[4:8] (metaOffset=12, so user data starts at
+	// slot offset 12). This corrupts structIdx, forcing Deallocate's O(log N)
+	// binary search fallback over slabBase.
 	rec, _ := FreeListAlloc[Record](fl)
 	for i := range rec.Payload {
 		rec.Payload[i] = 0xFF
 	}
 	rec.ID = 0xFFFFFFFFFFFFFFFF
 
-	// Dealloc must succeed — proves metadata is intact.
+	// Dealloc must succeed via fallback despite corrupted structIdx.
 	if err := FreeListDealloc(fl, rec); err != nil {
-		t.Fatal("metadata corruption caused dealloc failure:", err)
+		t.Fatal("dealloc fallback failed after metadata corruption:", err)
 	}
 
-	// Slot is reusable after dealloc (FreeList is LIFO — may get same slot back).
+	// Slot is reusable after dealloc via fallback.
 	rec2, err := FreeListAlloc[Record](fl)
 	if err != nil {
 		t.Fatal("re-allocate after metadata stress test failed:", err)
 	}
-	rec2.ID = 0 // overwrite, confirm writeable
+	rec2.ID = 0
 	if rec2.ID != 0 {
 		t.Error("re-allocated slot not writeable")
 	}

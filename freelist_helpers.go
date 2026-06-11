@@ -1,14 +1,15 @@
 // Package memory — generic helpers for typed FreeList allocation.
 //
-// FreeList slots include 12 bytes of intrusive metadata at the head of each
-// slot (next pointer + struct index). These helpers hide that offset so
-// callers work with *T directly — no unsafe, no manual offset arithmetic.
+// FreeList slots have a 12-byte gap (metaOffset) at the head before typed user
+// data begins. These helpers hide that offset so callers work with *T directly
+// — no unsafe, no manual offset arithmetic.
 //
 // Slot layout (see pushFree):
 //
-//	[0:8]  next pointer  (uint64, Treiber stack link)
-//	[8:12] packed meta   (uint32: structIdx | homeShard<<24)
-//	[12:]  user data     ← *T points here
+//	[0:8]   next pointer  (uint64, Treiber stack link)
+//	[8:12]  unused
+//	[12:]   user data     ← *T points here
+//	[24:28] packed meta   (uint32: structIdx; inside user data region)
 
 package memory
 
