@@ -232,6 +232,37 @@ memory.FreeListDealloc(fl, hdr)
 | `FreeListSlotFor[T](fl, *T) []byte` | FreeList | Get backing slot for `*T` |
 | `MustFreeListAlloc[T](fl) *T` | FreeList | Panic-on-error variant |
 
+### Mmap
+
+```go
+data, err := memory.MmapFileReadOnly(fd, offset, size)   // read-only shared file mapping
+data, err := memory.MmapFile(fd, offset, size, writable)  // read-only or read-write shared mapping
+err := memory.Munmap(data)                                 // unmap a mapped region
+```
+
+`MmapFileReadOnly` maps a file descriptor as a read-only shared mapping,
+returning a `[]byte` backed by the mapped region. `MmapFile` accepts a
+`writable` boolean: `false` is equivalent to `MmapFileReadOnly`; `true`
+enables `PROT_READ|PROT_WRITE` (Unix) or `PAGE_READWRITE` + `FILE_MAP_WRITE`
+(Windows), creating a shared read-write mapping where changes propagate to the
+underlying file via the kernel page cache.
+
+`Munmap` unmaps a previously mapped region. On Unix it calls `munmap(2)`; on
+Windows it calls `UnmapViewOfFile`. Calling `Munmap` on an already-unmapped
+region returns an error. `Munmap` on a nil or zero-length slice is safe (it
+returns an error without panicking).
+
+| Function | OS | Protection flags |
+|----------|----|-----------------|
+| `MmapFileReadOnly(fd, offset, size)` | Unix | `PROT_READ`, `MAP_SHARED` |
+| | Windows | `PAGE_READONLY`, `FILE_MAP_READ` |
+| `MmapFile(fd, offset, size, false)` | Unix | `PROT_READ`, `MAP_SHARED` |
+| | Windows | `PAGE_READONLY`, `FILE_MAP_READ` |
+| `MmapFile(fd, offset, size, true)` | Unix | `PROT_READ\|PROT_WRITE`, `MAP_SHARED` |
+| | Windows | `PAGE_READWRITE`, `FILE_MAP_WRITE` |
+| `Munmap(data)` | Unix | `munmap(2)` |
+| | Windows | `UnmapViewOfFile` |
+
 ## Safety
 
 ### Reset contract

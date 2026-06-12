@@ -1,6 +1,25 @@
 # Changelog
 
-## [Unreleased]
+## [v1.0.3] — 2026-06-12
+
+### Added
+
+- **`MmapFile`, `MmapFileReadOnly`, `Munmap`** — cross-platform public API for
+  file-backed shared memory mappings. `MmapFileReadOnly(fd, offset, size)` maps a
+  file descriptor as a read-only shared mapping. `MmapFile(fd, offset, size, writable)`
+  supports both read-only (`writable=false`, equivalent to `MmapFileReadOnly`) and
+  read-write (`writable=true`) shared mappings where modifications propagate to the
+  underlying file via the kernel page cache. `Munmap(data)` unmaps a previously
+  mapped region. Platform support:
+  - **Unix** (`mmap_unix.go`): `PROT_READ` / `PROT_READ|PROT_WRITE` + `MAP_SHARED`;
+    `munmap(2)` for unmap.
+  - **Windows** (`mmap_windows.go`): `PAGE_READONLY` / `PAGE_READWRITE` +
+    `CreateFileMapping` + `MapViewOfFile`; `UnmapViewOfFile` for unmap.
+- **`mmap_test.go`** — 19 tests covering read-only, writable, shared mapping
+  semantics, offset/partial-size mappings, multiple maps on the same fd, edge cases
+  (invalid fd, negative offset, empty file, zero-size map, map-beyond-file-end),
+  Munmap safety (nil, empty, double-unmap), and a 100-iteration map/unmap round-trip
+  stress test. All tests pass on macOS (arm64) and are cross-platform.
 
 ## [v1.0.2] — 2026-06-08
 
