@@ -1,15 +1,16 @@
 // Package memory — generic helpers for typed FreeList allocation.
 //
-// FreeList slots have a 12-byte gap (metaOffset) at the head before typed user
-// data begins. These helpers hide that offset so callers work with *T directly
+// FreeList slots have a 16-byte gap (metaOffset) at the head before typed user
+// data begins. The 16-byte alignment satisfies ARM64 checkptr requirements
+// for Go types containing pointers (slice headers, interfaces).
+// These helpers hide that offset so callers work with *T directly
 // — no unsafe, no manual offset arithmetic.
 //
 // Slot layout (see pushFree):
 //
 //	[0:8]   next pointer  (uint64, Treiber stack link)
-//	[8:12]  unused
-//	[12:]   user data     ← *T points here
-//	[24:28] packed meta   (uint32: structIdx; inside user data region)
+//	[8:16]  padding       (alignment to 16 bytes for ARM64)
+//	[16:]   user data     ← *T points here (properly aligned)
 
 package memory
 
@@ -18,7 +19,8 @@ import "unsafe"
 // metaOffset is the number of bytes of intrusive slot metadata before user
 // data. It is the gap between the slot base pointer (Allocate return value)
 // and where the typed user data begins.
-const metaOffset = 12
+// Must be at least 16 for ARM64 pointer alignment.
+const metaOffset = 16
 
 // FreeListAlloc allocates a single slot from fl and returns a typed pointer
 // to the user-data region. It is the typed equivalent of fl.Allocate().
@@ -40,7 +42,7 @@ func FreeListAlloc[T any](fl *FreeList) (*T, error) {
 		return nil, err
 	}
 
-	// Skip the 12-byte metadata header. The slot is off-heap mmap memory —
+	// Skip the 16-byte metadata header. The slot is off-heap mmap memory —
 	// not a Go-managed object — so GC movement rules do not apply.
 	ptr := unsafe.Add(unsafe.Pointer(unsafe.SliceData(slot)), metaOffset)
 	return (*T)(ptr), nil
