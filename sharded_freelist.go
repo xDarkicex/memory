@@ -360,6 +360,7 @@ func (sfl *ShardedFreeList) Reset() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sfl.cancel = cancel
 	sfl.pidDone = make(chan struct{})
+	sfl.closeOnce = sync.Once{}
 	go sfl.runPIDController(ctx)
 }
 
