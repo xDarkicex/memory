@@ -415,6 +415,7 @@ func (sfl *ShardedFreeList) runPIDController(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			close(sfl.pidDone)
 			return
 		case <-ticker.C:
 			stats := sfl.Stats()
