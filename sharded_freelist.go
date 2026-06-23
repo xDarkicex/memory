@@ -32,6 +32,7 @@ type ShardedFreeList struct {
 	hyHeader  hyalineHeader
 	cancel    context.CancelFunc
 	pidDone   chan struct{} // closed when runPIDController exits
+	closeOnce sync.Once
 }
 
 type shard struct {
@@ -415,7 +416,7 @@ func (sfl *ShardedFreeList) runPIDController(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			close(sfl.pidDone)
+			sfl.closeOnce.Do(func() { close(sfl.pidDone) })
 			return
 		case <-ticker.C:
 			stats := sfl.Stats()
