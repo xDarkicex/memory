@@ -187,8 +187,8 @@ err := sfl.Retire(slot)               // Hyaline SMR path (see contracts below)
 sfl.HyalineEnter(shardIdx)            // protect concurrent readers
 sfl.HyalineLeave(shardIdx)            // drain retired nodes, decrement refs
 stats := sfl.Stats()
-sfl.Reset()                            // bulk-free + restart PID controller
-sfl.Free()                             // release mmap + cancel PID controller
+sfl.Reset()                            // bulk-free + refresh PID state
+sfl.Free()                             // release mmap + unregister PID state
 ```
 
 ### Generic helpers
@@ -647,16 +647,17 @@ macOS uses `MADV_FREE` (lazy).
 
 ### PID adaptive threshold (ShardedFreeList)
 
-`NewShardedFreeList` launches a background PI controller (Kp=2.0, Ki=0.5,
-anti-windup ±100, 100ms ticker) that dynamically adjusts the Hyaline batch
-flush threshold from its default of 65 down to as low as 1. When the pool
-drops below 20% free capacity, the controller forces partial batches to
-flush sooner, preventing the exhaustion cliff that occurs with a static
-threshold. The hot path (`hyalineRetire`) sees only a single
-`atomic.Uint64.Load` — zero additional contention or branching.
+`NewShardedFreeList` registers with a package-wide background PI scheduler
+(Kp=2.0, Ki=0.5, anti-windup ±100, 100ms ticker) that dynamically adjusts each
+allocator's Hyaline batch flush threshold from its default of 65 down to as low
+as 1. When a pool drops below 20% free capacity, that allocator's PID state
+forces partial batches to flush sooner, preventing the exhaustion cliff that
+occurs with a static threshold. The hot path (`hyalineRetire`) sees only a
+single `atomic.Uint64.Load` — zero additional contention or branching.
 
-The controller is automatically restarted on `Reset()` and cancelled on
-`Free()`.
+The scheduler is shared process-wide to avoid one ticker goroutine per
+allocator. PID state remains per allocator, is refreshed on `Reset()`, and is
+unregistered before `Free()` releases mmap'd memory.
 
 ### Watchdog
 

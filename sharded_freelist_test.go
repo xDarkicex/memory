@@ -453,6 +453,99 @@ func TestShardedFreeListPIDControllerReset(t *testing.T) {
 	}
 }
 
+func TestShardedFreeListSharedPIDControllerLifecycle(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	const count = 16
+	sfls := make([]*ShardedFreeList, 0, count)
+	defer func() {
+		for _, sfl := range sfls {
+			if sfl != nil {
+				_ = sfl.Free()
+			}
+		}
+	}()
+
+	for i := 0; i < count; i++ {
+		sfl, err := NewShardedFreeList(cfg, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sfls = append(sfls, sfl)
+	}
+
+	defaultShardedFreeListPID.mu.Lock()
+	entries := len(defaultShardedFreeListPID.entries)
+	running := defaultShardedFreeListPID.running
+	defaultShardedFreeListPID.mu.Unlock()
+
+	if entries != count {
+		t.Fatalf("shared PID entries = %d, want %d", entries, count)
+	}
+	if !running {
+		t.Fatal("shared PID controller is not running")
+	}
+
+	for i, sfl := range sfls {
+		if err := sfl.Free(); err != nil {
+			t.Fatal(err)
+		}
+		sfls[i] = nil
+	}
+
+	defaultShardedFreeListPID.mu.Lock()
+	entries = len(defaultShardedFreeListPID.entries)
+	running = defaultShardedFreeListPID.running
+	stopping := defaultShardedFreeListPID.stopping
+	defaultShardedFreeListPID.mu.Unlock()
+
+	if entries != 0 {
+		t.Fatalf("shared PID entries after Free = %d, want 0", entries)
+	}
+	if running || stopping {
+		t.Fatalf("shared PID controller running=%v stopping=%v, want both false", running, stopping)
+	}
+}
+
+func TestShardedFreeListSharedPIDThresholdsArePerAllocator(t *testing.T) {
+	cfg := DefaultFreeListConfig()
+	cfg.PoolSize = 64 * 1024
+	cfg.SlotSize = 64
+	cfg.SlabSize = 4096
+	cfg.Prealloc = true
+
+	hot, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hot.Free()
+
+	idle, err := NewShardedFreeList(cfg, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idle.Free()
+
+	hot.global.allocated.Store(hot.global.reserved.Load())
+
+	defaultShardedFreeListPID.tick()
+
+	hotThreshold := hot.hyHeader.threshold.Load()
+	idleThreshold := idle.hyHeader.threshold.Load()
+	if hotThreshold >= shardedPIDMaxThreshold {
+		t.Fatalf("hot threshold = %d, want below %d", hotThreshold, shardedPIDMaxThreshold)
+	}
+	if idleThreshold != shardedPIDMaxThreshold {
+		t.Fatalf("idle threshold = %d, want %d", idleThreshold, shardedPIDMaxThreshold)
+	}
+}
+
 func TestShardedFreeListHyalineEnterLeave(t *testing.T) {
 	cfg := DefaultFreeListConfig()
 	cfg.PoolSize = 64 * 1024
