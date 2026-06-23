@@ -30,9 +30,8 @@ type ShardedFreeList struct {
 	numShards int
 	gen       atomic.Uint64
 	hyHeader  hyalineHeader
-	cancel    context.CancelFunc
-	pidDone   chan struct{} // closed when runPIDController exits
-	closeOnce sync.Once
+	cancel  context.CancelFunc
+	pidDone chan struct{} // closed when runPIDController exits
 }
 
 type shard struct {
@@ -360,7 +359,6 @@ func (sfl *ShardedFreeList) Reset() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sfl.cancel = cancel
 	sfl.pidDone = make(chan struct{})
-	sfl.closeOnce = sync.Once{}
 	go sfl.runPIDController(ctx)
 }
 
@@ -417,7 +415,6 @@ func (sfl *ShardedFreeList) runPIDController(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			sfl.closeOnce.Do(func() { close(sfl.pidDone) })
 			return
 		case <-ticker.C:
 			stats := sfl.Stats()
