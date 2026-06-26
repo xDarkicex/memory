@@ -20,8 +20,12 @@ func munmap(data []byte) error {
 	return windows.VirtualFree(uintptr(unsafe.Pointer(unsafe.SliceData(data))), 0, windows.MEM_RELEASE)
 }
 
+// allocationGranularity is the Windows virtual memory allocation granularity.
+// Always 64KB on all Windows versions.
+const allocationGranularity = 65536
+
 func MmapFileReadOnly(fd int, offset int64, size int) ([]byte, error) {
-	return mmapFile(fd, offset, size, false)
+	return MmapFile(fd, offset, size, false)
 }
 
 func MmapFile(fd int, offset int64, size int, writable bool) ([]byte, error) {
@@ -42,9 +46,7 @@ func MmapFile(fd int, offset int64, size int, writable bool) ([]byte, error) {
 		return nil, windows.ERROR_INVALID_PARAMETER
 	}
 
-	var allocInfo windows.SystemInfo
-	windows.GetSystemInfo(&allocInfo)
-	align := int64(allocInfo.AllocationGranularity)
+	align := int64(allocationGranularity)
 	alignOffset := offset & ^(align - 1)
 	diff := int(offset - alignOffset)
 
@@ -81,9 +83,7 @@ func Munmap(data []byte) error {
 		return nil
 	}
 	ptr := uintptr(unsafe.Pointer(unsafe.SliceData(data)))
-	var allocInfo windows.SystemInfo
-	windows.GetSystemInfo(&allocInfo)
-	align := uintptr(allocInfo.AllocationGranularity)
+	align := uintptr(allocationGranularity)
 	alignPtr := ptr & ^(align - 1)
 	return windows.UnmapViewOfFile(alignPtr)
 }
