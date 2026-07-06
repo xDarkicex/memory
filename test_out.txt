@@ -1,0 +1,448 @@
+=== RUN   TestHashMap_Stress_Concurrent
+panic: bin0 alloc failed: slot too small: sizeof(T)+12 exceeds SlotSize
+fatal error: panic holding locks
+
+goroutine 7 gp=0x14000003a40 m=3 mp=0x1400005d008 [running]:
+runtime.throw({0x102b826d8?, 0x1400008e050?})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/panic.go:1094 +0x34 fp=0x14000079d30 sp=0x14000079d00 pc=0x102a9d9f4
+panic({0x102bdf0a0?, 0x1400008e050?})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/panic.go:769 +0x1a4 fp=0x14000079de0 sp=0x14000079d30 pc=0x102a9d754
+github.com/xDarkicex/memory.(*HashMap).helpSplit(0x14000148008, 0x129af0000, 0x14000092020, 0x0)
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_resize.go:46 +0x4fc fp=0x14000079ea0 sp=0x14000079de0 pc=0x102b48f1c
+github.com/xDarkicex/memory.(*HashMap).Put(0x14000148008, 0x6, 0x140000102c8)
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_ops.go:36 +0x1b0 fp=0x14000079f40 sp=0x14000079ea0 pc=0x102b47ea0
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.func1(0x0)
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:35 +0x6c fp=0x14000079fb0 sp=0x14000079f40 pc=0x102b5985c
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:37 +0x2c fp=0x14000079fd0 sp=0x14000079fb0 pc=0x102b597bc
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000079fd0 sp=0x14000079fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 1 gp=0x140000021c0 m=nil [chan receive]:
+runtime.gopark(0x102aa6320?, 0x1400007c9b8?, 0xcc?, 0x8?, 0x102dec0d0?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x1400007c970 sp=0x1400007c950 pc=0x102a9db00
+runtime.chanrecv(0x14000126200, 0x1400007ca77, 0x1)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/chan.go:667 +0x428 fp=0x1400007c9f0 sp=0x1400007c970 pc=0x102a38188
+runtime.chanrecv1(0x102d40240?, 0x102c1cd20?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/chan.go:509 +0x14 fp=0x1400007ca20 sp=0x1400007c9f0 pc=0x102a37d24
+testing.(*T).Run(0x14000003180, {0x102b862d8?, 0x1400007cb38?}, 0x102c17640)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:2005 +0x378 fp=0x1400007cb00 sp=0x1400007ca20 pc=0x102b07608
+testing.runTests.func1(0x14000003180)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:2477 +0x38 fp=0x1400007cb40 sp=0x1400007cb00 pc=0x102b09368
+testing.tRunner(0x14000003180, 0x1400007cc68)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:1934 +0xc8 fp=0x1400007cb90 sp=0x1400007cb40 pc=0x102b068a8
+testing.runTests(0x1400000e030, {0x102d3d7c0, 0x9d, 0x9d}, {0x140001081a0?, 0x7?, 0x102d403c0?})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:2475 +0x3b8 fp=0x1400007cc90 sp=0x1400007cb90 pc=0x102b09288
+testing.(*M).Run(0x14000100140)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:2337 +0x530 fp=0x1400007cec0 sp=0x1400007cc90 pc=0x102b08130
+main.main()
+	_testmain.go:441 +0x80 fp=0x1400007cf40 sp=0x1400007cec0 pc=0x102b741c0
+runtime.main()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:285 +0x278 fp=0x1400007cfd0 sp=0x1400007cf40 pc=0x102a69f08
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400007cfd0 sp=0x1400007cfd0 pc=0x102aa5424
+
+goroutine 17 gp=0x14000082380 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000052790 sp=0x14000052770 pc=0x102a9db00
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:466
+runtime.forcegchelper()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:373 +0xb4 fp=0x140000527d0 sp=0x14000052790 pc=0x102a6a254
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140000527d0 sp=0x140000527d0 pc=0x102aa5424
+created by runtime.init.7 in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:361 +0x24
+
+goroutine 18 gp=0x14000082540 m=nil [GC sweep wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000052f60 sp=0x14000052f40 pc=0x102a9db00
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:466
+runtime.bgsweep(0x14000090000)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgcsweep.go:279 +0x9c fp=0x14000052fb0 sp=0x14000052f60 pc=0x102a5380c
+runtime.gcenable.gowrap1()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgc.go:212 +0x28 fp=0x14000052fd0 sp=0x14000052fb0 pc=0x102a474d8
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000052fd0 sp=0x14000052fd0 pc=0x102aa5424
+created by runtime.gcenable in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgc.go:212 +0x6c
+
+goroutine 19 gp=0x14000082700 m=nil [GC scavenge wait]:
+runtime.gopark(0x14000090000?, 0x102bc5448?, 0x1?, 0x0?, 0x14000082700?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000053760 sp=0x14000053740 pc=0x102a9db00
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:466
+runtime.(*scavengerState).park(0x102d40440)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgcscavenge.go:425 +0x5c fp=0x14000053790 sp=0x14000053760 pc=0x102a5139c
+runtime.bgscavenge(0x14000090000)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgcscavenge.go:653 +0x44 fp=0x140000537b0 sp=0x14000053790 pc=0x102a518d4
+runtime.gcenable.gowrap2()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgc.go:213 +0x28 fp=0x140000537d0 sp=0x140000537b0 pc=0x102a47478
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140000537d0 sp=0x140000537d0 pc=0x102aa5424
+created by runtime.gcenable in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mgc.go:213 +0xac
+
+goroutine 2 gp=0x14000002e00 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000056f70 sp=0x14000056f50 pc=0x102a9db00
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:466
+runtime.updateMaxProcsGoroutine()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:6720 +0xf4 fp=0x14000056fd0 sp=0x14000056f70 pc=0x102a78c04
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000056fd0 sp=0x14000056fd0 pc=0x102aa5424
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:6708 +0x48
+
+goroutine 3 gp=0x14000002fc0 m=nil [finalizer wait]:
+runtime.gopark(0x0?, 0x0?, 0xb8?, 0x65?, 0x102a9e6a4?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000056580 sp=0x14000056560 pc=0x102a9db00
+runtime.runFinalizers()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mfinal.go:210 +0x104 fp=0x140000567d0 sp=0x14000056580 pc=0x102a46574
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140000567d0 sp=0x140000567d0 pc=0x102aa5424
+created by runtime.createfing in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/mfinal.go:172 +0x78
+
+goroutine 4 gp=0x14000003500 m=nil [runnable]:
+sync.(*WaitGroup).Add(0x140000102d0, 0x1)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/sync/waitgroup.go:77 +0x274 fp=0x1400007ded0 sp=0x1400007ded0 pc=0x102aaaf14
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent(0x14000003340)
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:30 +0xc8 fp=0x1400007df60 sp=0x1400007ded0 pc=0x102b59418
+testing.tRunner(0x14000003340, 0x102c17640)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:1934 +0xc8 fp=0x1400007dfb0 sp=0x1400007df60 pc=0x102b068a8
+testing.(*T).Run.gowrap1()
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:1997 +0x28 fp=0x1400007dfd0 sp=0x1400007dfb0 pc=0x102b07728
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400007dfd0 sp=0x1400007dfd0 pc=0x102aa5424
+created by testing.(*T).Run in goroutine 1
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/testing/testing.go:1997 +0x364
+
+goroutine 5 gp=0x140000036c0 m=nil [select]:
+runtime.gopark(0x14000078f58?, 0x2?, 0xf8?, 0x8d?, 0x14000078f34?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000078db0 sp=0x14000078d90 pc=0x102a9db00
+runtime.selectgo(0x14000078f58, 0x14000078f30, 0x1?, 0x0, 0x14000057758?, 0x1)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/select.go:351 +0x6bc fp=0x14000078ef0 sp=0x14000078db0 pc=0x102a7db9c
+github.com/xDarkicex/memory.(*sharedPIDController).run(0x102d36500, 0x140000262a0, 0x14000003340?)
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/sharded_pid.go:101 +0xbc fp=0x14000078fa0 sp=0x14000078ef0 pc=0x102b4ca8c
+github.com/xDarkicex/memory.(*sharedPIDController).startLocked.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/sharded_pid.go:81 +0x2c fp=0x14000078fd0 sp=0x14000078fa0 pc=0x102b4c99c
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000078fd0 sp=0x14000078fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.(*sharedPIDController).startLocked in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/sharded_pid.go:81 +0xf4
+
+goroutine 6 gp=0x14000003880 m=nil [select]:
+runtime.gopark(0x14000057f90?, 0x2?, 0x38?, 0x7e?, 0x14000057f7c?)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/proc.go:460 +0xc0 fp=0x14000396df0 sp=0x14000396dd0 pc=0x102a9db00
+runtime.selectgo(0x14000396f90, 0x14000057f78, 0x0?, 0x0, 0x0?, 0x1)
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/select.go:351 +0x6bc fp=0x14000396f30 sp=0x14000396df0 pc=0x102a7db9c
+github.com/xDarkicex/memory.(*CyberneticController).Start.func1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_cybernetics.go:73 +0x9c fp=0x14000396fd0 sp=0x14000396f30 pc=0x102b47aac
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000396fd0 sp=0x14000396fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.(*CyberneticController).Start in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_cybernetics.go:68 +0x5c
+
+goroutine 8 gp=0x14000003c00 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000058fd0 sp=0x14000058fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000058fd0 sp=0x14000058fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 9 gp=0x14000003dc0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140000597d0 sp=0x140000597d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140000597d0 sp=0x140000597d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 10 gp=0x14000164000 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000059fd0 sp=0x14000059fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000059fd0 sp=0x14000059fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 11 gp=0x140001641c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016a7d0 sp=0x1400016a7d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016a7d0 sp=0x1400016a7d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 12 gp=0x14000164380 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016afd0 sp=0x1400016afd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016afd0 sp=0x1400016afd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 13 gp=0x14000164540 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016b7d0 sp=0x1400016b7d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016b7d0 sp=0x1400016b7d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 14 gp=0x14000164700 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016bfd0 sp=0x1400016bfd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016bfd0 sp=0x1400016bfd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 15 gp=0x140001648c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016c7d0 sp=0x1400016c7d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016c7d0 sp=0x1400016c7d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 16 gp=0x14000164a80 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016cfd0 sp=0x1400016cfd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016cfd0 sp=0x1400016cfd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 33 gp=0x14000164c40 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016d7d0 sp=0x1400016d7d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016d7d0 sp=0x1400016d7d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 34 gp=0x14000164e00 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x1400016dfd0 sp=0x1400016dfd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x1400016dfd0 sp=0x1400016dfd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 35 gp=0x14000164fc0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001667d0 sp=0x140001667d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001667d0 sp=0x140001667d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 36 gp=0x14000165180 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000166fd0 sp=0x14000166fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000166fd0 sp=0x14000166fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 37 gp=0x14000165340 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001677d0 sp=0x140001677d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001677d0 sp=0x140001677d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 38 gp=0x14000165500 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000167fd0 sp=0x14000167fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000167fd0 sp=0x14000167fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 39 gp=0x140001656c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001687d0 sp=0x140001687d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001687d0 sp=0x140001687d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 40 gp=0x14000165880 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000168fd0 sp=0x14000168fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000168fd0 sp=0x14000168fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 41 gp=0x14000165a40 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001697d0 sp=0x140001697d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001697d0 sp=0x140001697d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 42 gp=0x14000165c00 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000169fd0 sp=0x14000169fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000169fd0 sp=0x14000169fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 43 gp=0x14000165dc0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001747d0 sp=0x140001747d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001747d0 sp=0x140001747d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 44 gp=0x14000178000 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000174fd0 sp=0x14000174fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000174fd0 sp=0x14000174fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 45 gp=0x140001781c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001757d0 sp=0x140001757d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001757d0 sp=0x140001757d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 46 gp=0x14000178380 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000175fd0 sp=0x14000175fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000175fd0 sp=0x14000175fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 47 gp=0x14000178540 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001767d0 sp=0x140001767d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001767d0 sp=0x140001767d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 48 gp=0x14000178700 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000176fd0 sp=0x14000176fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000176fd0 sp=0x14000176fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 49 gp=0x140001788c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001777d0 sp=0x140001777d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001777d0 sp=0x140001777d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 50 gp=0x14000178a80 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000177fd0 sp=0x14000177fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000177fd0 sp=0x14000177fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 51 gp=0x14000178c40 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001707d0 sp=0x140001707d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001707d0 sp=0x140001707d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 52 gp=0x14000178e00 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000170fd0 sp=0x14000170fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000170fd0 sp=0x14000170fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 53 gp=0x14000178fc0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001717d0 sp=0x140001717d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001717d0 sp=0x140001717d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 54 gp=0x14000179180 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000171fd0 sp=0x14000171fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000171fd0 sp=0x14000171fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 55 gp=0x14000179340 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001727d0 sp=0x140001727d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001727d0 sp=0x140001727d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 56 gp=0x14000179500 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000172fd0 sp=0x14000172fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000172fd0 sp=0x14000172fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 57 gp=0x140001796c0 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140001737d0 sp=0x140001737d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140001737d0 sp=0x140001737d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 58 gp=0x14000179880 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x14000173fd0 sp=0x14000173fd0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x14000173fd0 sp=0x14000173fd0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+
+goroutine 59 gp=0x14000179a40 m=nil [runnable]:
+github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent.gowrap1()
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 fp=0x140004047d0 sp=0x140004047d0 pc=0x102b59790
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.25.7/libexec/src/runtime/asm_arm64.s:1268 +0x4 fp=0x140004047d0 sp=0x140004047d0 pc=0x102aa5424
+created by github.com/xDarkicex/memory.TestHashMap_Stress_Concurrent in goroutine 4
+	/Users/z3robit/Development/golang/src/github.com/xDarkicex/memory/hashmap_stress_test.go:31 +0xa4
+FAIL	github.com/xDarkicex/memory	0.538s
+testing: warning: no tests to run
+PASS
+ok  	github.com/xDarkicex/memory/examples/parser-scratch	(cached) [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/xDarkicex/memory/examples/request-pool	(cached) [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/xDarkicex/memory/examples/vector-storage	(cached) [no tests to run]
+FAIL

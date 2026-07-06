@@ -11,11 +11,11 @@ import (
 func newVectorPool(tb testing.TB) *memory.Pool {
 	tb.Helper()
 	p, err := memory.NewPool(memory.AllocatorConfig{
-		PoolSize:  128 * 1024 * 1024,
-		SlabSize:  1 * 1024 * 1024,
-		SlabCount: 16,
+		PoolSize:  256 * 1024 * 1024,
+		SlabSize:  16 * 1024 * 1024,
+		SlabCount: 4,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}

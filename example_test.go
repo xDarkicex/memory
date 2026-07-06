@@ -18,7 +18,7 @@ func Example_pool() {
 		SlabCount: 1,
 		Prealloc:  true,
 	}
-	pool, err := memory.NewPool(cfg)
+	pool, err := memory.NewPool(cfg, 64)
 	if err != nil {
 		panic(err)
 	}
@@ -48,7 +48,7 @@ func Example_pool() {
 // single mmap'd region. Reset reuses the backing memory; Free releases it.
 // Shows both the raw API and the typed ArenaAlloc helper.
 func Example_arena() {
-	arena, err := memory.NewArena(4096)
+	arena, err := memory.NewArena(4096, 64)
 	if err != nil {
 		panic(err)
 	}
@@ -86,7 +86,7 @@ func Example_freelist() {
 	cfg.PoolSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, err := memory.NewFreeList(cfg)
+	fl, err := memory.NewFreeList(cfg, 64)
 	if err != nil {
 		panic(err)
 	}
@@ -123,7 +123,7 @@ func Example_shardedFreelist() {
 	cfg.PoolSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := memory.NewShardedFreeList(cfg, 4)
+	sfl, err := memory.NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		panic(err)
 	}
@@ -152,7 +152,7 @@ func Example_poolScoped() {
 		SlabCount: 2,
 		Prealloc:  true,
 	}
-	pool, err := memory.NewPool(cfg)
+	pool, err := memory.NewPool(cfg, 64)
 	if err != nil {
 		panic(err)
 	}

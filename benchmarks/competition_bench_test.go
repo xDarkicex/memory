@@ -54,7 +54,7 @@ func newCompFreeList(tb testing.TB) *memory.FreeList {
 	cfg.SlabCount = compSlabCount
 	cfg.PoolSize = compPoolSize
 	cfg.Prealloc = true
-	fl, err := memory.NewFreeList(cfg)
+	fl, err := memory.NewFreeList(cfg, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func newCompShardedFreeList(tb testing.TB) *memory.ShardedFreeList {
 	cfg.SlabCount = compSlabCount
 	cfg.PoolSize = compPoolSize
 	cfg.Prealloc = true
-	sfl, err := memory.NewShardedFreeList(cfg, compNumShards)
+	sfl, err := memory.NewShardedFreeList(cfg, 64, compNumShards)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -94,10 +94,10 @@ func newCompPool(tb testing.TB) *memory.Pool {
 	tb.Helper()
 	pool, err := memory.NewPool(memory.AllocatorConfig{
 		PoolSize:  compPoolSize,
+		SlabCount: compPoolSize / compSlabSize,
 		SlabSize:  compSlabSize,
-		SlabCount: compSlabCount,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func newCompPool(tb testing.TB) *memory.Pool {
 
 func newCompArena(tb testing.TB) *memory.Arena {
 	tb.Helper()
-	arena, err := memory.NewArena(compPoolSize)
+	arena, err := memory.NewArena(compPoolSize, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func newBFSBitsetMemory(tb testing.TB) *memory.ShardedFreeList {
 	cfg.SlabCount = bfsBitsetSlots
 	cfg.PoolSize = uint64(bfsBitsetSlots+2) * cfg.SlabSize
 	cfg.Prealloc = true
-	sfl, err := memory.NewShardedFreeList(cfg, 4)
+	sfl, err := memory.NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func newBFSFrontierMemory(tb testing.TB) *memory.ShardedFreeList {
 	cfg.SlabCount = bfsFrontierSlots
 	cfg.PoolSize = uint64(bfsFrontierSlots+2) * cfg.SlabSize
 	cfg.Prealloc = true
-	sfl, err := memory.NewShardedFreeList(cfg, 4)
+	sfl, err := memory.NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -696,7 +696,7 @@ func BenchmarkEdgeBulkAlloc_1M(b *testing.B) {
 		cfg.SlabCount = 64
 		cfg.PoolSize = uint64(edgeAllocCount)*edgeSlotSize + 16*1024*1024
 		cfg.Prealloc = true
-		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		sfl, err := memory.NewShardedFreeList(cfg, 64, 64)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -764,7 +764,7 @@ func BenchmarkEdgeTablePageBulk_128K(b *testing.B) {
 		cfg.SlabCount = 32
 		cfg.PoolSize = uint64(pageAllocCount)*pageSlotSize + 64*1024*1024
 		cfg.Prealloc = true
-		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		sfl, err := memory.NewShardedFreeList(cfg, 64, 64)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -845,7 +845,7 @@ func BenchmarkConcurrentAddEdge_8Workers(b *testing.B) {
 		cfg.SlabCount = 64
 		cfg.PoolSize = uint64(concurrentEdgeWorkers*concurrentEdgesPerWorker)*edgeSlotSize + 32*1024*1024
 		cfg.Prealloc = true
-		sfl, err := memory.NewShardedFreeList(cfg, 64)
+		sfl, err := memory.NewShardedFreeList(cfg, 64, 64)
 		if err != nil {
 			b.Fatal(err)
 		}

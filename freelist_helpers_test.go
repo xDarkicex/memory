@@ -18,7 +18,7 @@ func testFreeList(t *testing.T) *FreeList {
 	cfg.SlabCount = 1
 	cfg.PoolSize = 1024 * 1024
 	cfg.Prealloc = true
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatal(err)
 	}

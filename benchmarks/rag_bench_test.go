@@ -27,10 +27,10 @@ func newRAGPool(tb testing.TB) *memory.Pool {
 	tb.Helper()
 	p, err := memory.NewPool(memory.AllocatorConfig{
 		PoolSize:  256 * 1024 * 1024,
-		SlabSize:  2 * 1024 * 1024,
-		SlabCount: 32,
+		SlabCount: 4,
+		SlabSize:  64 * 1024 * 1024,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func BenchmarkRAG_PerVector_Alloc_Pool(b *testing.B) {
 		SlabSize:  2 * 1024 * 1024,
 		SlabCount: 1,
 		Prealloc:  false,
-	})
+	}, 64)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -501,12 +501,12 @@ func BenchmarkRAG_ConcurrentBuild_Make(b *testing.B) {
 func newRAGFreeList(tb testing.TB) *memory.FreeList {
 	tb.Helper()
 	fl, err := memory.NewFreeList(memory.FreeListConfig{
-		PoolSize:  256 * 1024 * 1024,
-		SlotSize:  ragSlotSize,
-		SlabSize:  2 * 1024 * 1024,
-		SlabCount: 32,
+		PoolSize:  uint64(ragIndexSize*2) * 512,
+		SlotSize:  512,
+		SlabCount: 16,
+		SlabSize:  32 * 1024 * 1024,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -517,12 +517,12 @@ func newRAGFreeList(tb testing.TB) *memory.FreeList {
 func newRAGShardedFreeList(tb testing.TB) *memory.ShardedFreeList {
 	tb.Helper()
 	sfl, err := memory.NewShardedFreeList(memory.FreeListConfig{
-		PoolSize:  256 * 1024 * 1024,
-		SlotSize:  ragSlotSize,
-		SlabSize:  2 * 1024 * 1024,
-		SlabCount: 32,
+		PoolSize:  uint64(ragIndexSize*2) * 512,
+		SlotSize:  512,
+		SlabCount: 16,
+		SlabSize:  32 * 1024 * 1024,
 		Prealloc:  true,
-	}, 64)
+	}, 64, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -687,7 +687,7 @@ func BenchmarkRAG_PerVector_Alloc_FreeList(b *testing.B) {
 		SlabSize:  2 * 1024 * 1024,
 		SlabCount: 1,
 		Prealloc:  false,
-	})
+	}, 64)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -711,7 +711,7 @@ func BenchmarkRAG_PerVector_Alloc_ShardedFreeList(b *testing.B) {
 		SlabSize:  2 * 1024 * 1024,
 		SlabCount: 1,
 		Prealloc:  false,
-	}, 64)
+	}, 64, 64)
 	if err != nil {
 		b.Fatal(err)
 	}

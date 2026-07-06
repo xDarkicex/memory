@@ -6,7 +6,12 @@ import (
 
 func testPool(t *testing.T) *Pool {
 	t.Helper()
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(AllocatorConfig{
+		PoolSize:  256 * 1024 * 1024,
+		SlabCount: 4,
+		SlabSize:  64 * 1024 * 1024,
+		Prealloc:  true,
+	}, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +100,7 @@ func TestPoolSlice_LargeBacking(t *testing.T) {
 }
 
 func TestMustPoolAlloc_AfterFree_Panics(t *testing.T) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		t.Fatal(err)
 	}

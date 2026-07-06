@@ -9,11 +9,11 @@ import (
 func newRequestPool(tb testing.TB) *memory.Pool {
 	tb.Helper()
 	p, err := memory.NewPool(memory.AllocatorConfig{
-		PoolSize:  16 * 1024 * 1024,
-		SlabSize:  256 * 1024,
+		PoolSize:  128 * 1024 * 1024,
+		SlabSize:  2 * 1024 * 1024,
 		SlabCount: 8,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		tb.Fatal(err)
 	}

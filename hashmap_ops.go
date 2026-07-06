@@ -27,6 +27,14 @@ func loadBucketVal(b *Bucket, idx uint32) uintptr {
 	return *(*uintptr)(unsafe.Pointer(&b.Vals[idx]))
 }
 
+func storeBucketKey(b *Bucket, idx uint32, key uint64) {
+	*(*uint64)(unsafe.Pointer(&b.Keys[idx])) = key
+}
+
+func storeBucketVal(b *Bucket, idx uint32, val unsafe.Pointer) {
+	*(*uintptr)(unsafe.Pointer(&b.Vals[idx])) = uintptr(val)
+}
+
 // Put inserts a key and value into the flat array open-addressed map.
 func (h *HashMap) Put(key uint64, val unsafe.Pointer) {
 	for {
@@ -77,16 +85,19 @@ func (h *HashMap) putInner(s *mapState, key uint64, val unsafe.Pointer) error {
 				idx := firstMatch(match)
 				if b.Keys[idx].Load() == key {
 					// Overwrite existing value
-					b.Vals[idx].Store(uintptr(val))
+					storeBucketVal(b, idx, val)
 					return nil
 				}
 				match &= match - 1
 			}
 
-			// If not found, try to insert into an empty or tombstone slot
 			empty := emptyMask(meta)
 			if empty == 0 {
 				break // Bucket is full, go to next bucket (linear probe)
+			}
+
+			if meta&(uint64(0x7F)<<21) != 0 {
+				return h.putInnerTombstone(s, key, val, h2, startIdx, probeLimit)
 			}
 
 			idx := firstMatch(empty)
@@ -100,11 +111,89 @@ func (h *HashMap) putInner(s *mapState, key uint64, val unsafe.Pointer) error {
 			newMeta |= (uint64(h2&0x1F) << (29 + idx*5))
 
 			if b.Metadata.CompareAndSwap(meta, newMeta) {
-				b.Keys[idx].Store(key)
-				b.Vals[idx].Store(uintptr(val))
+				storeBucketKey(b, idx, key)
+				storeBucketVal(b, idx, val)
 				return nil
 			}
 			// CAS failed, retry this bucket
+		}
+	}
+	return ErrNeedsResize
+}
+
+func (h *HashMap) putInnerTombstone(s *mapState, key uint64, val unsafe.Pointer, h2 uint8, startIdx, probeLimit uint64) error {
+	var tombBucket *Bucket
+	var tombIdx uint32
+
+	for i := uint64(0); i < probeLimit; i++ {
+		bucketIdx := (startIdx + i) & (s.size - 1)
+		bAddr := s.base + uintptr(bucketIdx)*128
+		b := (*Bucket)(unsafe.Pointer(bAddr))
+
+		for {
+			meta := b.Metadata.Load()
+			_, _, _, _, migrating := extractMasks(meta)
+
+			if migrating || meta&bucketMigratedBit != 0 {
+				return ErrNeedsResize
+			}
+
+			match := matchMask(meta, h2)
+			for match != 0 {
+				idx := firstMatch(match)
+				if b.Keys[idx].Load() == key {
+					storeBucketVal(b, idx, val)
+					return nil
+				}
+				match &= match - 1
+			}
+
+			empty := emptyMask(meta)
+			if empty == 0 {
+				break
+			}
+
+			P := uint8((meta >> 21) & 0x7F)
+			tombs := P & empty
+			if tombs != 0 && tombBucket == nil {
+				tombBucket = b
+				tombIdx = firstMatch(tombs)
+			}
+
+			trueEmpty := empty &^ P
+			if trueEmpty == 0 {
+				break
+			}
+
+			if tombBucket != nil {
+				reuseMeta := tombBucket.Metadata.Load()
+				oBit := uint64(1) << tombIdx
+				pBit := uint64(1) << (21 + tombIdx)
+				if reuseMeta&oBit == 0 && reuseMeta&pBit != 0 && reuseMeta&bucketMigratingBit == 0 && reuseMeta&bucketMigratedBit == 0 {
+					newMeta := reuseMeta | oBit
+					newMeta &^= pBit
+					newMeta &^= (0x1F << (29 + tombIdx*5))
+					newMeta |= uint64(h2&0x1F) << (29 + tombIdx*5)
+					if tombBucket.Metadata.CompareAndSwap(reuseMeta, newMeta) {
+						storeBucketKey(tombBucket, tombIdx, key)
+						storeBucketVal(tombBucket, tombIdx, val)
+						return nil
+					}
+				}
+				tombBucket = nil
+				continue
+			}
+
+			idx := firstMatch(trueEmpty)
+			newMeta := meta | (1 << idx)
+			newMeta &^= (1 << (21 + idx))
+			newMeta &^= (0x1F << (29 + idx*5))
+			newMeta |= uint64(h2&0x1F) << (29 + idx*5)
+			if b.Metadata.CompareAndSwap(meta, newMeta) {
+				storeBucketKey(b, idx, key)
+				storeBucketVal(b, idx, val)
+				return nil
+			}
 		}
 	}
 	return ErrNeedsResize

@@ -41,7 +41,7 @@ type shard struct {
 // NewShardedFreeList creates a sharded allocator with numShards shards.
 // If numShards <= 0, defaults to 64 (over-provisioned to reduce hash collisions
 // across GOMAXPROCS cores without requiring procpin).
-func NewShardedFreeList(cfg FreeListConfig, numShards int) (*ShardedFreeList, error) {
+func NewShardedFreeList(cfg FreeListConfig, align uint64, numShards int) (*ShardedFreeList, error) {
 	if numShards <= 0 {
 		numShards = 64
 	}
@@ -53,7 +53,7 @@ func NewShardedFreeList(cfg FreeListConfig, numShards int) (*ShardedFreeList, er
 		numShards = n
 	}
 
-	global, err := NewFreeList(cfg)
+	global, err := NewFreeList(cfg, align)
 	if err != nil {
 		return nil, err
 	}

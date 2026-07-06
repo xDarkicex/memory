@@ -50,7 +50,7 @@ func BenchmarkPoolAllocateHotPath(b *testing.B) {
 		SlabCount: 16,
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -67,7 +67,7 @@ func BenchmarkPoolAllocateSlowPath(b *testing.B) {
 		SlabCount: 16,
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -90,7 +90,7 @@ func BenchmarkPoolAllocateGrowPath(b *testing.B) {
 		SlabCount: 1, // Start with minimal slabs to force growth
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -106,7 +106,7 @@ func BenchmarkPoolResetDuration(b *testing.B) {
 		SlabSize:  256 * 1024,
 		SlabCount: 64, // 16MB total
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -145,7 +145,7 @@ func BenchmarkPoolResetCost(b *testing.B) {
 				SlabCount: slabCount,
 				Prealloc:  true,
 			}
-			pool, err := NewPool(cfg)
+			pool, err := NewPool(cfg, 64)
 			if err != nil {
 				b.Fatalf("NewPool failed: %v", err)
 			}
@@ -180,7 +180,7 @@ func BenchmarkArenaAllocThroughput(b *testing.B) {
 	const allocSize = 64
 	const batchSize = 10000
 
-	arena, err := NewArena(arenaSize)
+	arena, err := NewArena(arenaSize, 64)
 	if err != nil {
 		b.Fatalf("NewArena failed: %v", err)
 	}
@@ -219,12 +219,12 @@ func BenchmarkPoolVsArenaThroughput(b *testing.B) {
 		SlabSize:  1 * 1024 * 1024,
 		SlabCount: 16,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
 
-	arena, err := NewArena(8 * 1024 * 1024)
+	arena, err := NewArena(8 * 1024 * 1024, 64)
 	if err != nil {
 		b.Fatalf("NewArena failed: %v", err)
 	}
@@ -273,7 +273,7 @@ func BenchmarkPoolPreallocVsLazy(b *testing.B) {
 			SlabCount: 16,
 			Prealloc:  true,
 		}
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			b.Fatalf("NewPool failed: %v", err)
 		}
@@ -288,7 +288,7 @@ func BenchmarkPoolPreallocVsLazy(b *testing.B) {
 			SlabCount: 16,
 			Prealloc:  false,
 		}
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			b.Fatalf("NewPool failed: %v", err)
 		}
@@ -305,7 +305,7 @@ func BenchmarkLargeAllocation(b *testing.B) {
 		SlabCount: 4,
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -316,7 +316,7 @@ func BenchmarkLargeAllocation(b *testing.B) {
 
 // BenchmarkHintWillNeed measures madvise(MADV_WILLNEED) cost.
 func BenchmarkHintWillNeed(b *testing.B) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -338,7 +338,7 @@ func BenchmarkHintWillNeed(b *testing.B) {
 
 // BenchmarkHintDontNeed measures madvise(MADV_DONTNEED/MADV_FREE) cost.
 func BenchmarkHintDontNeed(b *testing.B) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -372,7 +372,7 @@ func BenchmarkConcurrentAlloc(b *testing.B) {
 			SlabCount: 8,
 			Prealloc:  true,
 		}
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			b.Fatalf("NewPool failed: %v", err)
 		}
@@ -410,7 +410,7 @@ func BenchmarkConcurrentAllocShared(b *testing.B) {
 		SlabCount: 32,
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -454,7 +454,7 @@ func BenchmarkConcurrentAllocShared(b *testing.B) {
 
 // BenchmarkZeroMemory measures memclr cost.
 func BenchmarkZeroMemory(b *testing.B) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -481,7 +481,7 @@ func BenchmarkStatsRead(b *testing.B) {
 		SlabSize:  1 * 1024 * 1024,
 		SlabCount: 16,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -506,7 +506,7 @@ func BenchmarkSmallAllocVariedSizes(b *testing.B) {
 		SlabCount: 16,
 		Prealloc:  true,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -540,11 +540,11 @@ func BenchmarkSmallAllocVariedSizes(b *testing.B) {
 // BenchmarkGoHeapUsed measures Go runtime heap usage during Pool allocations.
 func BenchmarkGoHeapUsed(b *testing.B) {
 	pool, err := NewPool(AllocatorConfig{
-		PoolSize:  64 * 1024 * 1024,
-		SlabSize:  256 * 1024,
-		SlabCount: 16,
+		PoolSize:  256 * 1024 * 1024,
+		SlabCount: 4,
+		SlabSize:  64 * 1024 * 1024,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		b.Fatalf("NewPool failed: %v", err)
 	}
@@ -580,7 +580,7 @@ func BenchmarkBatchSize(b *testing.B) {
 				SlabCount: 16,
 				Prealloc:  true,
 			}
-			pool, _ := NewPool(cfg)
+			pool, _ := NewPool(cfg, 64)
 			benchmarkAllocBatch(b, pool, 64, bs)
 			pool.Reset()
 		})
@@ -599,7 +599,7 @@ func BenchmarkFreeListContention(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, _ := NewFreeList(cfg)
+	fl, _ := NewFreeList(cfg, 64)
 	defer fl.Free()
 
 	retriesBefore := fl.CasRetries()
@@ -636,7 +636,7 @@ func BenchmarkBatchPopFreeList(b *testing.B) {
 			cfg.SlabSize = 1024 * 1024
 			cfg.Prealloc = true
 
-			fl, _ := NewFreeList(cfg)
+			fl, _ := NewFreeList(cfg, 64)
 			defer fl.Free()
 
 			var sink byte
@@ -668,7 +668,7 @@ func BenchmarkBatchPopFreeList(b *testing.B) {
 			cfg.SlabSize = 1024 * 1024
 			cfg.Prealloc = true
 
-			fl, _ := NewFreeList(cfg)
+			fl, _ := NewFreeList(cfg, 64)
 			defer fl.Free()
 
 			var sink byte
@@ -707,7 +707,7 @@ func BenchmarkCrossShardFrequency(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, _ := NewFreeList(cfg)
+	fl, _ := NewFreeList(cfg, 64)
 	defer fl.Free()
 
 	var crossFrees atomic.Uint64
@@ -765,7 +765,7 @@ func BenchmarkCrossShardWorkStealing(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, _ := NewFreeList(cfg)
+	fl, _ := NewFreeList(cfg, 64)
 	defer fl.Free()
 
 	var deallocCount atomic.Uint64
@@ -843,7 +843,7 @@ func BenchmarkShardedHotPath(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -879,7 +879,7 @@ func BenchmarkShardedHotPathHyaline(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -918,7 +918,7 @@ func BenchmarkShardedConcurrent(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -953,7 +953,7 @@ func BenchmarkShardedConcurrentHyaline(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 16)
+	sfl, err := NewShardedFreeList(cfg, 64, 16)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -995,7 +995,7 @@ func BenchmarkShardedCrossShard(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1053,7 +1053,7 @@ func BenchmarkShardedRetireReclaim(b *testing.B) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1090,7 +1090,7 @@ func BenchmarkFreeListConcurrent(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, _ := NewFreeList(cfg)
+	fl, _ := NewFreeList(cfg, 64)
 	defer fl.Free()
 
 	b.ResetTimer()
@@ -1116,7 +1116,7 @@ func BenchmarkFreeListVsPool_64B(b *testing.B) {
 		cfg.SlabSize = 1024 * 1024
 		cfg.Prealloc = true
 
-		fl, _ := NewFreeList(cfg)
+		fl, _ := NewFreeList(cfg, 64)
 		defer fl.Free()
 
 		b.ResetTimer()
@@ -1135,7 +1135,7 @@ func BenchmarkFreeListVsPool_64B(b *testing.B) {
 			SlabCount: 16,
 			Prealloc:  true,
 		}
-		pool, _ := NewPool(cfg)
+		pool, _ := NewPool(cfg, 64)
 		defer pool.Free()
 
 		b.ResetTimer()
@@ -1181,7 +1181,7 @@ func benchFreeListHotPathSingle(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	fl, _ := NewFreeList(cfg)
+	fl, _ := NewFreeList(cfg, 64)
 	defer fl.Free()
 
 	b.ReportAllocs()
@@ -1204,7 +1204,7 @@ func benchShardedHotPathSingle(b *testing.B) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, _ := NewShardedFreeList(cfg, 8)
+	sfl, _ := NewShardedFreeList(cfg, 64, 8)
 	defer sfl.Free()
 
 	b.ReportAllocs()
@@ -1230,7 +1230,7 @@ func BenchmarkFreeListVsShardedConcurrent(b *testing.B) {
 		cfg.SlabSize = 1024 * 1024
 		cfg.Prealloc = true
 
-		fl, _ := NewFreeList(cfg)
+		fl, _ := NewFreeList(cfg, 64)
 		defer fl.Free()
 
 		b.ReportAllocs()
@@ -1253,7 +1253,7 @@ func BenchmarkFreeListVsShardedConcurrent(b *testing.B) {
 		cfg.SlabSize = 1024 * 1024
 		cfg.Prealloc = true
 
-		sfl, _ := NewShardedFreeList(cfg, 8)
+		sfl, _ := NewShardedFreeList(cfg, 64, 8)
 		defer sfl.Free()
 
 		b.ReportAllocs()

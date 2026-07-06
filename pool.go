@@ -62,7 +62,7 @@ type slab struct {
 
 // NewPool creates a new off-heap memory pool.
 // Returns *Pool pointer - no global singleton race.
-func NewPool(cfg AllocatorConfig) (*Pool, error) {
+func NewPool(cfg AllocatorConfig, align uint64) (*Pool, error) {
 	if cfg.SlabCount <= 0 {
 		cfg.SlabCount = 16
 	}
@@ -92,10 +92,17 @@ func NewPool(cfg AllocatorConfig) (*Pool, error) {
 		maxSlabs = cfg.SlabCount
 	}
 
+	if align == 0 {
+		align = 64 // AVX-512 / VMOVAPS safe default
+	}
+	if align&(align-1) != 0 {
+		return nil, fmt.Errorf("Alignment must be a power of 2, got %d", align)
+	}
+
 	p := &Pool{
 		cfg:         cfg,
-		align:       8,
-		alignMask:   7,
+		align:       align,
+		alignMask:   align - 1,
 		slabBuf:       make([]*slab, maxSlabs),
 		slabStructs:   make([]slab, maxSlabs),
 		largeBuf:      make([]*slab, maxSlabs),

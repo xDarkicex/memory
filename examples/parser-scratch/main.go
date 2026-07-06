@@ -35,7 +35,7 @@ func main() {
 		SlabSize:  64 * 1024,       // 64KB slabs
 		SlabCount: 4,
 		Prealloc:  true,
-	})
+	}, 64)
 	if err != nil {
 		panic(err)
 	}

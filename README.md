@@ -57,11 +57,11 @@ go get github.com/xDarkicex/memory
 
 ```go
 pool, err := memory.NewPool(memory.AllocatorConfig{
-    PoolSize:  64 * 1024 * 1024, // 64MB hard limit
-    SlabSize:  1024 * 1024,      // 1MB slabs
-    SlabCount: 16,
-    Prealloc:  true,
-})
+		PoolSize:  64 * 1024 * 1024, // 64MB limit
+		SlabCount: 16,               // pre-allocate 16 slabs
+		SlabSize:  4 * 1024 * 1024,  // 4MB per slab
+		Prealloc:  false,            // lazy allocation
+	}, 64)
 if err != nil {
     panic(err)
 }
@@ -75,7 +75,8 @@ pool.Reset() // bulk-free everything
 ### Arena (variable-size, lock-free bump pointer)
 
 ```go
-arena, err := memory.NewArena(1024 * 1024) // 1MB
+	// Initialize a memory arena (must provide exact alignment as power of 2, 8 is default for struct padding)
+	arena, err := memory.NewArena(1024 * 1024, 64) // 1MB with 8-byte alignment
 ptr, err := arena.Alloc(256)               // bump-pointer, lock-free
 arena.Reset()                              // rewind, keep mmap
 arena.Free()                               // release mmap
@@ -85,12 +86,9 @@ arena.Free()                               // release mmap
 
 ```go
 fl, err := memory.NewFreeList(memory.FreeListConfig{
-    PoolSize:  256 * 1024 * 1024,
-    SlotSize:  64,          // every slot is exactly 64 bytes
-    SlabSize:  2 * 1024 * 1024,
-    SlabCount: 32,
-    Prealloc:  true,
-})
+		PoolSize: 64 * 1024 * 1024, // 64MB
+		SlotSize: 256,              // 256 bytes per object
+	}, 64)
 if err != nil {
     panic(err)
 }
@@ -105,12 +103,10 @@ fl.BatchAllocate(dst [][]byte)      // batch-refill, amortizes CAS
 
 ```go
 sfl, err := memory.NewShardedFreeList(memory.FreeListConfig{
-    PoolSize:  256 * 1024 * 1024,
-    SlotSize:  64,
-    SlabSize:  2 * 1024 * 1024,
-    SlabCount: 32,
-    Prealloc:  true,
-}, 64) // 64 shards
+		PoolSize: 1024 * 1024 * 1024, // 1GB
+		SlotSize: 256,                // 256 bytes per struct
+		Prealloc: true,               // wire all memory to physical RAM immediately
+	}, 64, 64) // 64 shards
 if err != nil {
     panic(err)
 }
@@ -148,7 +144,7 @@ The caller controls the lifecycle.
 ### Pool
 
 ```go
-pool, err := memory.NewPool(memory.AllocatorConfig{...})
+pool, err := memory.NewPool(memory.AllocatorConfig{...}, 64)
 buf, err := pool.Allocate(size)       // off-heap, 0 heap allocs
 stats := pool.Stats()                 // atomic snapshot
 pool.Reset()                          // bulk-free, reuse mmap
@@ -158,7 +154,7 @@ pool.Free()                           // release mmap, invalidate pool
 ### Arena
 
 ```go
-arena, err := memory.NewArena(size)
+	arena, err := memory.NewArena(size, 64)
 ptr, err := arena.Alloc(size)         // bump-pointer, lock-free
 remaining := arena.Remaining()
 arena.Reset()                         // rewind, keep mmap
@@ -168,7 +164,7 @@ arena.Free()                          // release mmap, invalidate
 ### FreeList
 
 ```go
-fl, err := memory.NewFreeList(cfg)
+fl, err := memory.NewFreeList(cfg, 64)
 slot, err := fl.Allocate()            // single fixed-size slot
 n, err := fl.BatchAllocate(dst[:])    // batch refill, amortizes CAS
 err := fl.Deallocate(slot)            // return to freelist
@@ -180,7 +176,7 @@ fl.Free()                             // release mmap
 ### ShardedFreeList
 
 ```go
-sfl, err := memory.NewShardedFreeList(cfg, numShards)
+sfl, err := memory.NewShardedFreeList(cfg, 64, numShards)
 slot, err := sfl.Allocate()           // shard cache → batch refill → global
 err := sfl.Deallocate(slot)           // fast path: shard cache (zero atomics)
 err := sfl.Retire(slot)               // Hyaline SMR path (see contracts below)
@@ -739,6 +735,8 @@ This implementation bridges high-level Go concurrency with low-level systems res
 - **Safe Memory Reclamation**: Based on *Hyaline: Fast and Transparent Lock-Free Memory Reclamation* (PLDI '21) by Nikolaev and Ravindran. This provides $O(1)$ reclamation and robustness against stalled goroutines, enabling our 13.8M ops/sec throughput without the frequent memory barrier overhead inherent to traditional *Hazard Pointers* (Michael, 2004).
 - **Lock-Free Primitives**: Utilizes a sharded *Treiber Stack* (1986). To resolve the ABA problem (a classic weakness of Treiber stacks in non-GC languages), 16-bit generation tags are packed into 48-bit virtual addresses. Furthermore, sharding is used to avoid the scalability bottlenecks of global stacks, a principle outlined in *A Scalable Lock-free Stack Algorithm* (Hendler, Shavit, and Yerushalmi, 2004).
 - **Adaptive Control**: Reclamation pressure is managed via a PID controller, dynamically tuning batch flush thresholds to prevent liveness stalls under extreme oversubscription, applying principles from *Feedback Control for Computer Systems* (Janert).
+- **SIMD Within A Register (SWAR)**: The `OffHeapMap` metadata probing utilizes bitwise SWAR techniques introduced by *Google's Swiss Tables (Abseil)* and *Facebook's F14*, achieving 2-cycle multi-slot evaluation without explicit vector instructions.
+- **Wait-Free State Machines**: The cooperative map resizing architecture eliminates reader-writer locks in favor of atomic compare-and-swap migration chunking, based entirely on *Dr. Cliff Click's Non-Blocking Hash Map* research.
 
 ## Contributing
 

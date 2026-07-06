@@ -1,0 +1,36 @@
+--- hashmap.go
++++ hashmap.go
+@@ -107,17 +107,17 @@
+ 	for {
+ 		s := h.state.Load()
+ 		if s.next != nil {
+-			h.helpMigrate(s, (hashKey(key)>>16)&(s.size-1))
++			h.helpMigrateAll(s)
+ 		}
+ 
+ 		if err := h.putInner(s, key, val); err == nil {
+ 			return
+ 		} else if err == ErrNeedsResize {
+ 			_ = h.triggerResize()
+ 		}
+ 	}
+ }
+ 
+@@ -128,7 +128,7 @@
+ 	for {
+ 		s := h.state.Load()
+ 		if s.next != nil {
+-			h.helpMigrate(s, (hashKey(key)>>16)&(s.size-1))
++			h.helpMigrateAll(s)
+ 		}
+ 		
+ 		val, found := h.getInner(s, key)
+@@ -148,7 +148,7 @@
+ 	for {
+ 		s := h.state.Load()
+ 		if s.next != nil {
+-			h.helpMigrate(s, (hashKey(key)>>16)&(s.size-1))
++			h.helpMigrateAll(s)
+ 		}
+ 
+ 		deleted := h.deleteInner(s, key)

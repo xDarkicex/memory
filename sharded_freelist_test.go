@@ -14,7 +14,7 @@ func TestShardedFreeListBasicLifecycle(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestShardedFreeListDoubleFree(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestShardedFreeListReset(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestShardedFreeListConcurrent(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestShardedFreeListCrossShard(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 2)
+	sfl, err := NewShardedFreeList(cfg, 64, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestShardedFreeListExhaustion(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 2)
+	sfl, err := NewShardedFreeList(cfg, 64, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestNewShardedFreeListPowerOfTwoRounding(t *testing.T) {
 	cfg.SlabSize = 64 * 1024
 
 	// 5 is not a power of 2; should round up to 8.
-	sfl, err := NewShardedFreeList(cfg, 5)
+	sfl, err := NewShardedFreeList(cfg, 64, 5)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestNewShardedFreeListPowerOfTwoRounding(t *testing.T) {
 	}
 
 	// Negative numShards should default to 64.
-	sfl2, err := NewShardedFreeList(cfg, -1)
+	sfl2, err := NewShardedFreeList(cfg, 64, -1)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList with -1: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestNewShardedFreeListPowerOfTwoRounding(t *testing.T) {
 	}
 
 	// Zero numShards should default to 64.
-	sfl3, err := NewShardedFreeList(cfg, 0)
+	sfl3, err := NewShardedFreeList(cfg, 64, 0)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList with 0: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestNewShardedFreeListErrorPropagation(t *testing.T) {
 		SlotSize: 4096,
 		SlabSize: 64,
 	}
-	_, err := NewShardedFreeList(cfg, 4)
+	_, err := NewShardedFreeList(cfg, 64, 4)
 	if err == nil {
 		t.Fatal("expected error propagation from NewFreeList")
 	}
@@ -266,7 +266,7 @@ func TestShardedFreeListInvalidDeallocation(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestShardedFreeListRetireInvalid(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestShardedFreeListRetireDoubleRetire(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestShardedFreeListDeallocateSlowPath(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestShardedFreeListForceReclamation(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 2)
+	sfl, err := NewShardedFreeList(cfg, 64, 2)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestShardedFreeListPIDControllerFree(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestShardedFreeListPIDControllerReset(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestShardedFreeListSharedPIDControllerLifecycle(t *testing.T) {
 	}()
 
 	for i := 0; i < count; i++ {
-		sfl, err := NewShardedFreeList(cfg, 4)
+		sfl, err := NewShardedFreeList(cfg, 64, 4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -520,13 +520,13 @@ func TestShardedFreeListSharedPIDThresholdsArePerAllocator(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	hot, err := NewShardedFreeList(cfg, 4)
+	hot, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer hot.Free()
 
-	idle, err := NewShardedFreeList(cfg, 4)
+	idle, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func TestShardedFreeListHyalineEnterLeave(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatalf("NewShardedFreeList: %v", err)
 	}

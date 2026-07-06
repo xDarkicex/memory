@@ -11,7 +11,7 @@ type Cat struct {
 }
 
 func TestArenaAlloc_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestArenaAlloc_Basic(t *testing.T) {
 }
 
 func TestArenaAlloc_Error(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestArenaAlloc_Error(t *testing.T) {
 }
 
 func TestArenaAlloc_MultipleDistinct(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestArenaAlloc_MultipleDistinct(t *testing.T) {
 }
 
 func TestArenaSlice_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestArenaSlice_Basic(t *testing.T) {
 }
 
 func TestArenaSlice_ZeroCap(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestArenaSlice_ZeroCap(t *testing.T) {
 }
 
 func TestArenaNewString_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestArenaNewString_Basic(t *testing.T) {
 }
 
 func TestArenaNewString_Empty(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestArenaNewString_Empty(t *testing.T) {
 }
 
 func TestArenaNewString_InStruct(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestArenaNewString_InStruct(t *testing.T) {
 }
 
 func TestArenaAppend_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestArenaAppend_Basic(t *testing.T) {
 }
 
 func TestArenaAppend_PanicsOnOverflow(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestArenaAppend_PanicsOnOverflow(t *testing.T) {
 }
 
 func TestArenaAppend_ZeroElems(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestArenaAppend_ZeroElems(t *testing.T) {
 }
 
 func TestMustArenaAlloc_AfterFree_Panics(t *testing.T) {
-	arena, err := NewArena(64 << 10)
+	arena, err := NewArena(64 << 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestMustArenaAlloc_AfterFree_Panics(t *testing.T) {
 }
 
 func TestArenaAlloc_LargeType(t *testing.T) {
-	arena, err := NewArena(1 << 20)
+	arena, err := NewArena(1 << 20, 64)
 	if err != nil {
 		t.Fatal(err)
 	}

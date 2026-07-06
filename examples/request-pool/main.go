@@ -20,11 +20,11 @@ const (
 
 func main() {
 	pool, err := memory.NewPool(memory.AllocatorConfig{
-		PoolSize:  16 * 1024 * 1024, // 16MB
-		SlabSize:  256 * 1024,       // 256KB slabs
+		PoolSize:  128 * 1024 * 1024, // 128MB max
+		SlabSize:  2 * 1024 * 1024,   // 2MB slabs
 		SlabCount: 8,
-		Prealloc:  true,
-	})
+		Prealloc:  false,
+	}, 64)
 	if err != nil {
 		panic(err)
 	}

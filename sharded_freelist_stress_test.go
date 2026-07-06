@@ -76,7 +76,7 @@ func TestStressBounce(t *testing.T) {
 		dur = 2 * time.Second
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 128)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestStressHyalineReclamation(t *testing.T) {
 		dur = 2 * time.Second
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 64)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestStressHyalineReclamation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStressExhaustion(t *testing.T) {
-	sfl, err := NewShardedFreeList(stressTinyCfg(), 32)
+	sfl, err := NewShardedFreeList(stressTinyCfg(), 64, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestStressConcurrentRetire(t *testing.T) {
 		dur = 1 * time.Second
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 128)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestStressMixedWorkload(t *testing.T) {
 		dur = 3 * time.Second
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 128)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +624,7 @@ func TestStressDoubleFree(t *testing.T) {
 		t.Skip("skipping in short mode")
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 64)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func TestStressStatsConsistency(t *testing.T) {
 		dur = 1 * time.Second
 	}
 
-	sfl, err := NewShardedFreeList(stressCfg(), 64)
+	sfl, err := NewShardedFreeList(stressCfg(), 64, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestStressHammer(t *testing.T) {
 		SlabSize:  4 * 1024 * 1024,
 		SlabCount: 32,
 		Prealloc:  true,
-	}, 256) // 256 shards — extreme over-provisioning
+	}, 64, 256) // 256 shards — extreme over-provisioning
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,6 +50,72 @@ func TestHashMap_Delete(t *testing.T) {
 	}
 }
 
+func TestHashMap_PutDoesNotDuplicateAfterTombstone(t *testing.T) {
+	m, err := NewHashMap(HashMapConfig{Capacity: 8, Alignment: 128})
+	if err != nil {
+		t.Fatalf("Failed to init: %v", err)
+	}
+
+	values := make([]int, 9)
+	for i := 0; i < 8; i++ {
+		values[i] = i
+		m.Put(uint64(i*2), unsafe.Pointer(&values[i]))
+	}
+
+	if !m.Delete(0) {
+		t.Fatalf("Delete returned false for existing key")
+	}
+
+	values[8] = 88
+	m.Put(14, unsafe.Pointer(&values[8]))
+
+	got, ok := m.Get(14)
+	if !ok {
+		t.Fatalf("Get failed after updating key behind tombstone")
+	}
+	if *(*int)(got) != 88 {
+		t.Fatalf("Get returned stale value after tombstone update: %d", *(*int)(got))
+	}
+
+	s := m.state.Load()
+	seen := 0
+	for bIdx := uint64(0); bIdx < s.size; bIdx++ {
+		b := (*Bucket)(unsafe.Pointer(s.base + uintptr(bIdx)*128))
+		meta := b.Metadata.Load()
+		for slot := uint32(0); slot < 7; slot++ {
+			if meta&(1<<slot) != 0 && b.Keys[slot].Load() == 14 {
+				seen++
+			}
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("expected one copy of key 14, found %d", seen)
+	}
+}
+
+func TestHashMap_PutRecyclesTombstone(t *testing.T) {
+	m, err := NewHashMap(HashMapConfig{Capacity: 8, Alignment: 128})
+	if err != nil {
+		t.Fatalf("Failed to init: %v", err)
+	}
+
+	values := make([]int, 8)
+	for i := 0; i < 7; i++ {
+		values[i] = i
+		m.Put(uint64(i*2), unsafe.Pointer(&values[i]))
+	}
+	if !m.Delete(4) {
+		t.Fatalf("Delete returned false for existing key")
+	}
+
+	values[7] = 77
+	m.Put(100, unsafe.Pointer(&values[7]))
+	got, ok := m.Get(100)
+	if !ok || *(*int)(got) != 77 {
+		t.Fatalf("Get failed after tombstone recycle: ok=%v", ok)
+	}
+}
+
 func TestHashMap_SWAR_Filtering(t *testing.T) {
 	// A targeted test to ensure SWAR fingerprint collision masking operates cleanly
 	m, err := NewHashMap(HashMapConfig{Capacity: 8, Alignment: 128})

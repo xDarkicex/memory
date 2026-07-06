@@ -25,11 +25,18 @@ type Arena struct {
 	align  uint64
 }
 
-// NewArena creates a new off-heap memory arena.
-func NewArena(size uint64) (*Arena, error) {
+// NewArena creates a new off-heap memory arena with custom power-of-2 alignment.
+func NewArena(size uint64, align uint64) (*Arena, error) {
 	if size > math.MaxInt {
 		return nil, fmt.Errorf("arena size %d exceeds addressable int range", size)
 	}
+	if align == 0 {
+		align = 64 // AVX-512 / VMOVAPS safe default
+	}
+	if align&(align-1) != 0 {
+		return nil, fmt.Errorf("alignment must be a power of 2, got %d", align)
+	}
+	
 	data, err := mmapAnonymous(int(size))
 	if err != nil {
 		return nil, ErrMmapFailed
@@ -38,7 +45,7 @@ func NewArena(size uint64) (*Arena, error) {
 	return &Arena{
 		data:  data,
 		mmapd: true,
-		align: 8,
+		align: align,
 	}, nil
 }
 

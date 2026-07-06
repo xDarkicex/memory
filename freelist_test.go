@@ -17,7 +17,7 @@ func TestFreeListBasicLifecycle(t *testing.T) {
 	cfg.SlabCount = 1
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestFreeListExhaustion(t *testing.T) {
 	cfg.SlabCount = 1
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestFreeListDoubleFree(t *testing.T) {
 	cfg.SlabSize = 4 * 1024
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestFreeListInvalidDeallocation(t *testing.T) {
 	cfg.SlabSize = 4 * 1024
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestFreeListReset(t *testing.T) {
 	cfg.SlabSize = 4 * 1024
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestFreeListConcurrent(t *testing.T) {
 	cfg.SlabCount = 1
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestFreeListZeroHeapAllocs(t *testing.T) {
 	cfg.SlabSize = 64 * 1024
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestFreeListAccessors(t *testing.T) {
 	cfg.SlabCount = 1
 	cfg.Prealloc = true
 
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestNewFreeListSlabSizeLessThanSlotSize(t *testing.T) {
 		SlotSize: 4096,
 		SlabSize: 64, // smaller than SlotSize
 	}
-	_, err := NewFreeList(cfg)
+	_, err := NewFreeList(cfg, 64)
 	if err == nil {
 		t.Fatal("expected error for SlabSize < SlotSize")
 	}
@@ -394,7 +394,7 @@ func TestNewFreeListPreallocRollback(t *testing.T) {
 		SlabCount: 1,
 		Prealloc:  true,
 	}
-	_, err := NewFreeList(cfg)
+	_, err := NewFreeList(cfg, 64)
 	if err == nil {
 		t.Fatal("expected error for Prealloc with SlabSize > PoolSize")
 	}
@@ -411,7 +411,7 @@ func TestNewFreeListHugepageValidation(t *testing.T) {
 		SlabCount:    1,
 		UseHugePages: true,
 	}
-	_, err := NewFreeList(cfg)
+	_, err := NewFreeList(cfg, 64)
 	if err == nil {
 		t.Fatal("expected error for SlabSize not a multiple of HugepageSize")
 	}
@@ -424,12 +424,12 @@ func TestNewFreeListSlotSizeMinimum(t *testing.T) {
 		SlotSize: 16,
 		SlabSize: 4096,
 	}
-	fl, err := NewFreeList(cfg)
+	fl, err := NewFreeList(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewFreeList: %v", err)
 	}
 	defer fl.Free()
-	if fl.cfg.SlotSize != 32 {
-		t.Errorf("SlotSize = %d, want 32 (clamped from 16)", fl.cfg.SlotSize)
+	if fl.cfg.SlotSize != 64 {
+		t.Errorf("SlotSize = %d, want 64 (clamped from 16)", fl.cfg.SlotSize)
 	}
 }

@@ -149,7 +149,7 @@ type freelistSlab struct {
 }
 
 // NewFreeList creates a new fixed-size freelist allocator.
-func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
+func NewFreeList(cfg FreeListConfig, align uint64) (*FreeList, error) {
 	if cfg.SlotSize < 32 {
 		cfg.SlotSize = 32
 	}
@@ -172,8 +172,14 @@ func NewFreeList(cfg FreeListConfig) (*FreeList, error) {
 		}
 	}
 
-	// Align slot size up to 8 bytes for pointer atomicity.
-	align := uint64(8)
+	// Align slot size up to alignment parameter bytes.
+	if align == 0 {
+		align = 64 // AVX-512 / VMOVAPS safe default
+	}
+	if align&(align-1) != 0 {
+		return nil, fmt.Errorf("Alignment must be a power of 2, got %d", align)
+	}
+
 	slotSize := (cfg.SlotSize + align - 1) &^ (align - 1)
 
 	slotsPerSlab := cfg.SlabSize / slotSize

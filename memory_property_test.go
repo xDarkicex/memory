@@ -18,7 +18,7 @@ func TestPoolSizeNeverExceeded(t *testing.T) {
 			SlabSize:  256 * 1024, // 256KB slabs
 			SlabCount: 4,
 		}
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			t.Logf("NewPool failed: %v", err)
 			return false
@@ -63,7 +63,7 @@ func TestResetRestoresFullCapacity(t *testing.T) {
 			SlabSize:  128 * 1024, // 128KB slabs
 			SlabCount: 4,
 		}
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			t.Logf("NewPool failed: %v", err)
 			return false
@@ -118,7 +118,7 @@ totalAllocated += allocSize
 
 // TestGenerationIncrementsOnReset verifies generation counter increments
 func TestGenerationIncrementsOnReset(t *testing.T) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestAllocatedNeverExceedsReserved(t *testing.T) {
 		cfg.SlabSize = 64 * 1024
 		cfg.SlabCount = 8
 
-		pool, err := NewPool(cfg)
+		pool, err := NewPool(cfg, 64)
 		if err != nil {
 			t.Logf("NewPool failed: %v", err)
 			return false
@@ -192,10 +192,10 @@ func TestAllocatedNeverExceedsReserved(t *testing.T) {
 // TestSlabCountMonotonicIncrease verifies slab count only grows
 func TestSlabCountMonotonicIncrease(t *testing.T) {
 	pool, err := NewPool(AllocatorConfig{
-		PoolSize:  256 * 1024,
-		SlabSize:  64 * 1024,
-		SlabCount: 1,
-	})
+		PoolSize:  1024 * 1024 * 4,
+		SlabCount: 2,
+		SlabSize:  1024 * 1024 * 2,
+	}, 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestNoMemoryLeakAfterFree(t *testing.T) {
 		SlabSize:  1 * 1024 * 1024,
 		SlabCount: 4,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestMultipleLargeAllocations(t *testing.T) {
 		SlabSize:  2 * 1024 * 1024,  // 2MB slabs
 		SlabCount: 4,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestConcurrentAllocNoRace(t *testing.T) {
 		SlabSize:  256 * 1024,
 		SlabCount: 16,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestArenaConcurrentAlloc(t *testing.T) {
 		t.Skip("skipping in short mode")
 	}
 
-	arena, err := NewArena(1024 * 1024 * 4) // 4MB arena
+	arena, err := NewArena(1024 * 1024 * 4, 64) // 4MB arena
 	if err != nil {
 		t.Fatalf("NewArena failed: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestArenaConcurrentAlloc(t *testing.T) {
 
 // TestArenaOffsetWraparound prevents offset arithmetic wraparound
 func TestArenaOffsetWraparound(t *testing.T) {
-	arena, err := NewArena(1024) // Small arena
+	arena, err := NewArena(1024, 64) // Small arena
 	if err != nil {
 		t.Fatalf("NewArena failed: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestArenaOffsetWraparound(t *testing.T) {
 
 // TestPoolAlignment verifies 8-byte alignment
 func TestPoolAlignment(t *testing.T) {
-	pool, err := NewPool(DefaultConfig())
+	pool, err := NewPool(DefaultConfig(), 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestReservedAccountant(t *testing.T) {
 		SlabSize:  64 * 1024,
 		SlabCount: 1,
 	}
-	pool, err := NewPool(cfg)
+	pool, err := NewPool(cfg, 64)
 	if err != nil {
 		t.Fatalf("NewPool failed: %v", err)
 	}

@@ -12,7 +12,7 @@ func TestHyalineSMREnterLeave(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestHyalineSMRRetireReclaim(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 2)
+	sfl, err := NewShardedFreeList(cfg, 64, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestHyalineSMRProtectedSlotSurvivesReclamation(t *testing.T) {
 	cfg.SlabSize = 4096
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 2)
+	sfl, err := NewShardedFreeList(cfg, 64, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestHyalineSMRDoubleRetire(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 4)
+	sfl, err := NewShardedFreeList(cfg, 64, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestHyalineSMRConcurrentEnterLeaveRetire(t *testing.T) {
 	cfg.SlabSize = 1024 * 1024
 	cfg.Prealloc = true
 
-	sfl, err := NewShardedFreeList(cfg, 8)
+	sfl, err := NewShardedFreeList(cfg, 64, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
