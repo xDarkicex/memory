@@ -21,6 +21,7 @@ Package `memory` provides four off-heap allocator types:
 - **`Pool`** — variable-size slab allocator (CAS, lock-free, bulk `Reset()`)
 - **`FreeList`** — fixed-size lock-free allocator (Treiber stack, per-object `Deallocate()`)
 - **`ShardedFreeList`** — sharded fixed-size allocator (per-shard LIFO caches + Hyaline SMR, `Deallocate()` or `Retire()`)
+- **`HashMap`** — zero-allocation concurrent flat-array open-addressed map (cooperative migration, 100% off-heap)
 
 Allocations are served from mmap'd slabs; the Go GC never scans this memory.
 Safe memory reclamation (SMR) for concurrent workloads is provided by Hyaline
@@ -50,6 +51,7 @@ go get github.com/xDarkicex/memory
 | `Arena` | Variable-size (CAS bump pointer) | `Reset()` (rewind) or `Free()` (destroy) | Lock-free multi-producer | Frame scratch, per-request temp data |
 | `FreeList` | Fixed-size (Treiber stack) | Per-object `Deallocate()` | Lock-free | Fixed-size object pools, per-vector allocations |
 | `ShardedFreeList` | Fixed-size (sharded + Hyaline SMR) | Per-object `Deallocate()` or `Retire()` | Lock-free, sharded by goroutine | High-concurrency fixed-size pools, vector DBs |
+| `HashMap` | Flat array (128B buckets) | Tombstone-based | Lock-free, cooperative migration | High-concurrency lookups, RAG indices, zero-GC maps |
 
 ## Quickstart
 
@@ -97,6 +99,21 @@ defer fl.Free()
 slot, err := fl.Allocate()          // returns []byte of exactly SlotSize
 fl.Deallocate(slot)                 // return to freelist
 fl.BatchAllocate(dst [][]byte)      // batch-refill, amortizes CAS
+```
+
+### HashMap (zero-allocation concurrent map)
+
+```go
+hm, err := memory.NewHashMap(memory.HashMapConfig{
+    Capacity: 1000000,
+})
+if err != nil {
+    panic(err)
+}
+// 100% lock-free, zero-allocation operations
+hm.Put(hashKey, unsafe.Pointer(valPtr))
+val, ok := hm.Get(hashKey)
+hm.Delete(hashKey)
 ```
 
 ### ShardedFreeList (fixed-size, high concurrency, Hyaline SMR)
@@ -397,6 +414,14 @@ go test -bench=. -benchmem ./examples/parser-scratch/
 See [BENCHMARK.md](BENCHMARK.md) for extended methodology, raw data, and
 historical trends. Summary below. Apple M2, Go 1.25, Darwin (arm64). All paths
 show **0 heap allocations**.
+
+### HashMap RAG Map Workload
+
+| Benchmark | ns/op | B/op | allocs/op | vs `sync.Map` |
+|-----------|-------|------|-----------|---------------|
+| **MapBuildIndex_HashMap** | **26.2M** | **6.0KB** | **11** | **10,000× less heap** vs 62MB (33k allocs) |
+| **MapConcurrentLookup_HashMap** | **51.0** | 0 | 0 | **1.8× faster** |
+| **MapMixedWorkload_HashMap** | **118.6** | 0 | 0 | **2.0× faster** (3.2× faster than RWMutex) |
 
 ### Per-vector allocation (1536 float32 = 6KB, best-of-3)
 
