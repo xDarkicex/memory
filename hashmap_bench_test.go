@@ -26,7 +26,6 @@ func BenchmarkHashMap_PutGet_Concurrent(b *testing.B) {
 		arena, _ := NewArena(4096, 8)
 		defer arena.Free()
 		val, _ := arena.Alloc(8)
-		GlobalDummy = val
 
 		for pb.Next() {
 			rng ^= rng >> 12
@@ -57,7 +56,6 @@ func BenchmarkHashMap_Put_Sequential(b *testing.B) {
 	arena, _ := NewArena(4096, 8)
 	defer arena.Free()
 	val, _ := arena.Alloc(8)
-	GlobalDummy = val
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -82,7 +80,6 @@ func BenchmarkHashMap_Get_Sequential(b *testing.B) {
 	arena, _ := NewArena(4096, 8)
 	defer arena.Free()
 	val, _ := arena.Alloc(8)
-	GlobalDummy = val
 	for i := uint64(0); i < benchGetKeys; i++ {
 		m.Put(uint64(i), val)
 	}

@@ -25,7 +25,6 @@ func TestHashMap_Stress_Concurrent(t *testing.T) {
 	arena, _ := NewArena(4096, 8)
 	defer arena.Free()
 	val, _ := arena.Alloc(8)
-	GlobalDummy = val
 
 	// Concurrent Inserts
 	for i := 0; i < numRoutines; i++ {
