@@ -9,7 +9,7 @@ import "unsafe"
 func (h *HashMap) offHeapPtr(bucketIdx uint64) unsafe.Pointer {
 	// bucketIdx is constrained by (size - 1) prior to calling.
 	s := h.state.Load()
-	return unsafe.Pointer(s.base + uintptr(bucketIdx)*128)
+	return unsafe.Pointer(uintptr(s.base) + uintptr(bucketIdx*128))
 }
 
 // nextPow2 mathematically rounds up a 64-bit integer to the nearest power of 2.

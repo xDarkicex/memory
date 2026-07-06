@@ -13,8 +13,7 @@ func (h *HashMap) helpMigrate(s *mapState, bucketIdx uint64) {
 	if s.next == nil {
 		return
 	}
-	bAddr := s.base + uintptr(bucketIdx)*128
-	b := (*Bucket)(unsafe.Pointer(bAddr))
+	b := (*Bucket)(unsafe.Pointer(uintptr(s.base) + uintptr(bucketIdx*128)))
 	for {
 		meta := b.Metadata.Load()
 		if meta&bucketMigratedBit != 0 {
@@ -41,7 +40,7 @@ func (h *HashMap) helpMigrate(s *mapState, bucketIdx uint64) {
 						var batch hyalineBatch
 						hyalineBatchInit(&batch)
 
-						nodePtr := unsafe.Pointer(s.base - 128)
+						nodePtr := unsafe.Pointer(uintptr(s.base) - 128)
 						hyalineRetire(&h.smrHeader, &batch, nodePtr, func(batchHead unsafe.Pointer) {
 							size := *(*uint64)(unsafe.Add(batchHead, 64))
 							_ = munmapRaw(uintptr(batchHead), size)
@@ -117,7 +116,7 @@ func (h *HashMap) triggerResize() error {
 	}
 	*(*uint64)(unsafe.Add(unsafe.Pointer(addr), 64)) = allocSize
 	nextState := &mapState{
-		base:     addr + 128,
+		base:     unsafe.Pointer(addr + 128),
 		size:     bucketCount,
 		mmapSize: allocSize,
 	}

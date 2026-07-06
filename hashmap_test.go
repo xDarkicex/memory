@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +15,10 @@ func TestHashMap_BasicPutGet(t *testing.T) {
 	}
 
 	key := uint64(42)
-	var dummy *int = new(int)
-	val := unsafe.Pointer(dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	ptr, _ := arena.Alloc(8)
+	val := unsafe.Pointer(ptr)
 
 	m.Put(key, val)
 
@@ -35,8 +38,9 @@ func TestHashMap_Delete(t *testing.T) {
 	}
 
 	key := uint64(99)
-	var dummy *int = new(int)
-	val := unsafe.Pointer(dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	val, _ := arena.Alloc(8)
 
 	m.Put(key, val)
 	ok := m.Delete(key)
@@ -56,18 +60,21 @@ func TestHashMap_PutDoesNotDuplicateAfterTombstone(t *testing.T) {
 		t.Fatalf("Failed to init: %v", err)
 	}
 
-	values := make([]int, 9)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
 	for i := 0; i < 8; i++ {
-		values[i] = i
-		m.Put(uint64(i*2), unsafe.Pointer(&values[i]))
+		ptr, _ := arena.Alloc(8)
+		*(*int)(ptr) = i
+		m.Put(uint64(i*2), ptr)
 	}
 
 	if !m.Delete(0) {
 		t.Fatalf("Delete returned false for existing key")
 	}
 
-	values[8] = 88
-	m.Put(14, unsafe.Pointer(&values[8]))
+	ptr, _ := arena.Alloc(8)
+	*(*int)(ptr) = 88
+	m.Put(14, ptr)
 
 	got, ok := m.Get(14)
 	if !ok {
@@ -80,7 +87,7 @@ func TestHashMap_PutDoesNotDuplicateAfterTombstone(t *testing.T) {
 	s := m.state.Load()
 	seen := 0
 	for bIdx := uint64(0); bIdx < s.size; bIdx++ {
-		b := (*Bucket)(unsafe.Pointer(s.base + uintptr(bIdx)*128))
+		b := (*Bucket)(unsafe.Pointer(uintptr(s.base) + uintptr(bIdx*128)))
 		meta := b.Metadata.Load()
 		for slot := uint32(0); slot < 7; slot++ {
 			if meta&(1<<slot) != 0 && b.Keys[slot].Load() == 14 {
@@ -99,17 +106,20 @@ func TestHashMap_PutRecyclesTombstone(t *testing.T) {
 		t.Fatalf("Failed to init: %v", err)
 	}
 
-	values := make([]int, 8)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
 	for i := 0; i < 7; i++ {
-		values[i] = i
-		m.Put(uint64(i*2), unsafe.Pointer(&values[i]))
+		ptr, _ := arena.Alloc(8)
+		*(*int)(ptr) = i
+		m.Put(uint64(i*2), ptr)
 	}
 	if !m.Delete(4) {
 		t.Fatalf("Delete returned false for existing key")
 	}
 
-	values[7] = 77
-	m.Put(100, unsafe.Pointer(&values[7]))
+	ptr, _ := arena.Alloc(8)
+	*(*int)(ptr) = 77
+	m.Put(100, ptr)
 	got, ok := m.Get(100)
 	if !ok || *(*int)(got) != 77 {
 		t.Fatalf("Get failed after tombstone recycle: ok=%v", ok)
@@ -124,10 +134,12 @@ func TestHashMap_SWAR_Filtering(t *testing.T) {
 	}
 
 	// Insert exactly 7 items (filling a single block)
-	dummies := make([]int, 8)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
 	for i := uint64(1); i <= 7; i++ {
-		dummies[i] = int(i)
-		m.Put(i, unsafe.Pointer(&dummies[i]))
+		ptr, _ := arena.Alloc(8)
+		*(*int)(ptr) = int(i)
+		m.Put(i, ptr)
 	}
 
 	for i := uint64(1); i <= 7; i++ {
@@ -136,6 +148,7 @@ func TestHashMap_SWAR_Filtering(t *testing.T) {
 			t.Logf("SWAR mask failed to locate key %d: ok=%v v=%v", i, ok, v)
 		}
 	}
+	runtime.KeepAlive(arena)
 }
 
 func TestHashMap_MigrateAllHandlesEmptyBuckets(t *testing.T) {
@@ -144,8 +157,11 @@ func TestHashMap_MigrateAllHandlesEmptyBuckets(t *testing.T) {
 		t.Fatalf("Failed to init: %v", err)
 	}
 
-	dummy := 1
-	m.Put(1, unsafe.Pointer(&dummy))
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	ptr, _ := arena.Alloc(8)
+	m.Put(1, ptr)
+	runtime.KeepAlive(ptr)
 
 	if err := m.triggerResize(); err != nil {
 		t.Fatalf("triggerResize failed: %v", err)
@@ -184,8 +200,9 @@ func TestHashMap_ConcurrentResizeCompletes(t *testing.T) {
 		t.Fatalf("Failed to init: %v", err)
 	}
 
-	dummy := 1
-	val := unsafe.Pointer(&dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	val, _ := arena.Alloc(8)
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 
@@ -216,4 +233,5 @@ func TestHashMap_ConcurrentResizeCompletes(t *testing.T) {
 			t.Fatalf("missing key after concurrent resize: %d", key)
 		}
 	}
+	runtime.KeepAlive(val)
 }

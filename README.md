@@ -103,6 +103,11 @@ fl.BatchAllocate(dst [][]byte)      // batch-refill, amortizes CAS
 
 ### HashMap (zero-allocation concurrent map)
 
+Values must be off-heap pointers (Arena, FreeList, Pool, or ShardedFreeList
+allocations). The GC never scans the mmap'd bucket array — Go heap pointers
+stored in the map are invisible to the collector and will be freed. The race
+detector's checkptr instrumentation catches this at test time.
+
 ```go
 hm, err := memory.NewHashMap(memory.HashMapConfig{
     Capacity: 1000000,
@@ -110,8 +115,13 @@ hm, err := memory.NewHashMap(memory.HashMapConfig{
 if err != nil {
     panic(err)
 }
-// 100% lock-free, zero-allocation operations
-hm.Put(hashKey, unsafe.Pointer(valPtr))
+
+// Allocate off-heap values — the map does not keep Go heap pointers alive.
+arena, _ := memory.NewArena(4096, 8)
+defer arena.Free()
+valPtr, _ := arena.Alloc(8)
+
+hm.Put(hashKey, valPtr)
 val, ok := hm.Get(hashKey)
 hm.Delete(hashKey)
 ```

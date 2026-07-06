@@ -21,7 +21,7 @@ type HashMapConfig struct {
 
 // mapState holds the current active mapping.
 type mapState struct {
-	base             uintptr
+	base             unsafe.Pointer
 	size             uint64
 	mmapSize         uint64
 	bucketsRemaining atomic.Uint64
@@ -35,7 +35,15 @@ const (
 	bucketMigratedBit = uint64(1) << 7
 )
 
-// HashMap is a cybernetic, zero-allocation, wait-free concurrent map.
+// HashMap is a cybernetic, zero-allocation, wait-free concurrent map backed by
+// mmap'd off-heap memory. The entire bucket array lives outside the Go heap — the
+// GC never scans it. The map uses CAS-based publishing with cooperative migration
+// (Dr. Cliff Click's wait-free hash map design).
+//
+// All values stored in the map must be off-heap pointers (Arena, FreeList, Pool,
+// or ShardedFreeList allocations). Go heap pointers stored in the map are invisible
+// to the GC and will be collected. The race detector's checkptr instrumentation
+// catches Go heap pointers at test time.
 type HashMap struct {
 	cfg       HashMapConfig
 	state     atomic.Pointer[mapState]
@@ -92,10 +100,10 @@ func NewHashMap(cfg HashMapConfig) (*HashMap, error) {
 	hyalineHeaderInit(&h.smrHeader)
 
 	// Store mmapSize at offset 64 of the SMR header so freeFn can read it
-	*(*uint64)(unsafe.Add(unsafe.Pointer(addr), 64)) = allocSize
+	*(*uint64)(unsafe.Pointer(addr + 64)) = allocSize
 
 	h.state.Store(&mapState{
-		base:     addr + 128,
+		base:     unsafe.Pointer(addr + 128),
 		size:     bucketCount,
 		mmapSize: allocSize,
 	})

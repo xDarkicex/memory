@@ -35,7 +35,9 @@ func storeBucketVal(b *Bucket, idx uint32, val unsafe.Pointer) {
 	*(*uintptr)(unsafe.Pointer(&b.Vals[idx])) = uintptr(val)
 }
 
-// Put inserts a key and value into the flat array open-addressed map.
+// Put inserts a key and value into the map. val must be an off-heap pointer
+// (Arena, FreeList, Pool, or ShardedFreeList allocation). The map does not keep
+// Go heap pointers alive — the GC never scans the mmap'd bucket array.
 func (h *HashMap) Put(key uint64, val unsafe.Pointer) {
 	for {
 		s := h.state.Load()
@@ -68,8 +70,7 @@ func (h *HashMap) putInner(s *mapState, key uint64, val unsafe.Pointer) error {
 
 	for i := uint64(0); i < probeLimit; i++ {
 		bucketIdx := (startIdx + i) & (s.size - 1)
-		bAddr := s.base + uintptr(bucketIdx)*128
-		b := (*Bucket)(unsafe.Pointer(bAddr))
+		b := (*Bucket)(unsafe.Pointer(uintptr(s.base) + uintptr(bucketIdx*128)))
 
 		for {
 			meta := b.Metadata.Load()
@@ -127,8 +128,7 @@ func (h *HashMap) putInnerTombstone(s *mapState, key uint64, val unsafe.Pointer,
 
 	for i := uint64(0); i < probeLimit; i++ {
 		bucketIdx := (startIdx + i) & (s.size - 1)
-		bAddr := s.base + uintptr(bucketIdx)*128
-		b := (*Bucket)(unsafe.Pointer(bAddr))
+		b := (*Bucket)(unsafe.Pointer(uintptr(s.base) + uintptr(bucketIdx*128)))
 
 		for {
 			meta := b.Metadata.Load()
@@ -199,7 +199,8 @@ func (h *HashMap) putInnerTombstone(s *mapState, key uint64, val unsafe.Pointer,
 	return ErrNeedsResize
 }
 
-// Get retrieves a value from the map using linear probing.
+// Get retrieves a value from the map. The returned pointer is the same off-heap
+// pointer that was passed to Put.
 func (h *HashMap) Get(key uint64) (unsafe.Pointer, bool) {
 	for {
 		s := h.state.Load()
@@ -226,8 +227,8 @@ func (h *HashMap) getInner(s *mapState, key uint64) (unsafe.Pointer, bool) {
 
 	for i := uint64(0); i < probeLimit; i++ {
 		bucketIdx := (startIdx + i) & (s.size - 1)
-		bAddr := s.base + uintptr(bucketIdx)*128
-		b := (*Bucket)(unsafe.Pointer(bAddr))
+		basePtr := s.base
+		b := (*Bucket)(unsafe.Pointer(uintptr(basePtr) + uintptr(bucketIdx*128)))
 
 		meta := loadBucketMeta(b)
 		match := matchMask(meta, h2)
@@ -258,7 +259,8 @@ func (h *HashMap) getInner(s *mapState, key uint64) (unsafe.Pointer, bool) {
 	return nil, false
 }
 
-// Delete removes a value from the map using linear probing and tombstones.
+// Delete removes a value from the map using tombstones. The caller is responsible
+// for freeing the off-heap value separately — Delete only removes the map entry.
 func (h *HashMap) Delete(key uint64) bool {
 	for {
 		s := h.state.Load()
@@ -286,8 +288,7 @@ func (h *HashMap) deleteInner(s *mapState, key uint64) bool {
 
 	for i := uint64(0); i < probeLimit; i++ {
 		bucketIdx := (startIdx + i) & (s.size - 1)
-		bAddr := s.base + uintptr(bucketIdx)*128
-		b := (*Bucket)(unsafe.Pointer(bAddr))
+		b := (*Bucket)(unsafe.Pointer(uintptr(s.base) + uintptr(bucketIdx*128)))
 
 		for {
 			meta := b.Metadata.Load()

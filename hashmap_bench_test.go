@@ -1,10 +1,10 @@
 package memory
 
 import (
+	"runtime"
 	"math/rand"
 	"sync"
 	"testing"
-	"unsafe"
 )
 
 // BenchmarkHashMap_PutGet_Concurrent rigorously tests the MESI 128-byte alignment
@@ -23,8 +23,10 @@ func BenchmarkHashMap_PutGet_Concurrent(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		// Thread-local pseudo-random sequence for extreme throughput testing
 		rng := rand.Uint64()
-		dummy := new(int)
-		val := unsafe.Pointer(dummy) // Dummy value pointer
+		arena, _ := NewArena(4096, 8)
+		defer arena.Free()
+		val, _ := arena.Alloc(8)
+		GlobalDummy = val
 
 		for pb.Next() {
 			rng ^= rng >> 12
@@ -52,13 +54,16 @@ func BenchmarkHashMap_Put_Sequential(b *testing.B) {
 		b.Fatalf("Failed to initialize HashMap: %v", err)
 	}
 
-	dummy := new(int)
-	val := unsafe.Pointer(dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	val, _ := arena.Alloc(8)
+	GlobalDummy = val
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Put(uint64(i), val)
 	}
+	runtime.KeepAlive(val)
 }
 
 // BenchmarkHashMap_Get_Sequential tests pure query throughput
@@ -74,11 +79,14 @@ func BenchmarkHashMap_Get_Sequential(b *testing.B) {
 		b.Fatalf("Failed to initialize HashMap: %v", err)
 	}
 
-	dummy := new(int)
-	val := unsafe.Pointer(dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	val, _ := arena.Alloc(8)
+	GlobalDummy = val
 	for i := uint64(0); i < benchGetKeys; i++ {
 		m.Put(uint64(i), val)
 	}
+	runtime.KeepAlive(val)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

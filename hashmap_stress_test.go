@@ -1,9 +1,9 @@
 package memory
 
 import (
+	"runtime"
 	"sync"
 	"testing"
-	"unsafe"
 )
 
 // TestHashMap_Stress_Concurrent tests extreme contention on the Hopscotch buckets
@@ -22,8 +22,10 @@ func TestHashMap_Stress_Concurrent(t *testing.T) {
 	numRoutines := 64
 	numOps := 5000
 
-	dummy := new(int)
-	val := unsafe.Pointer(dummy)
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	val, _ := arena.Alloc(8)
+	GlobalDummy = val
 
 	// Concurrent Inserts
 	for i := 0; i < numRoutines; i++ {
@@ -53,4 +55,5 @@ func TestHashMap_Stress_Concurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	runtime.KeepAlive(val)
 }
