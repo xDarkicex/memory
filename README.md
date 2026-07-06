@@ -225,6 +225,11 @@ vec = memory.ArenaAppend(arena, vec, 1.0, 2.0)
 hdr, err := memory.FreeListAlloc[Header](fl)
 hdr.ID = 42
 memory.FreeListDealloc(fl, hdr)
+
+// HashMap: typed map wrapper
+typedMap, err := memory.NewTypedMap[Header](cfg)
+typedMap.Put(123, &Header{ID: 42})
+hdr, found := typedMap.Get(123)
 ```
 
 | Helper | Allocator | Description |
@@ -244,6 +249,7 @@ memory.FreeListDealloc(fl, hdr)
 | `FreeListDealloc[T](fl, *T)` | FreeList | Deallocate a `*T` |
 | `FreeListSlotFor[T](fl, *T) []byte` | FreeList | Get backing slot for `*T` |
 | `MustFreeListAlloc[T](fl) *T` | FreeList | Panic-on-error variant |
+| `NewTypedMap[V](cfg) *TypedMap[V]` | HashMap | Generic zero-alloc Map wrapper |
 
 ### Mmap
 
