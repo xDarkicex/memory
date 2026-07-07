@@ -1,6 +1,49 @@
 # Changelog
 
-## [v1.0.3] — 2026-06-12
+## [v1.1.0] — 2026-07-06
+
+### Added
+
+- **`HashMap`** — zero-allocation, wait-free concurrent map backed by mmap'd
+  off-heap memory. CAS-based publishing with cooperative migration (Dr. Cliff
+  Click's wait-free hash map design). SWAR fingerprint filtering for 2-cycle
+  multi-slot evaluation. 128-byte cache-aligned buckets optimized for
+  AVX-512 / Apple Silicon. Generic `TypedMap[V]` wrapper.
+- **`HashMap` RAG benchmarks** — index build (10K vectors), concurrent lookup,
+  and mixed workload vs `sync.Map` and `sync.RWMutex`. 10,000× less heap than
+  `sync.Map`, 1.8–2.0× faster on concurrent workloads.
+- **Typed allocation helpers for ShardedFreeList** — `ShardedFreeListAlloc[T]`,
+  `ShardedFreeListDealloc[T]`, `ShardedFreeListSlotFor[T]`, and `Must` variants.
+
+### Changed
+
+- **Breaking: alignment parameter added to all allocator constructors.** All
+  four constructors now accept an explicit alignment parameter for SIMD/AVX-512
+  memory alignment:
+
+  | Constructor | Old signature | New signature |
+  |---|---|---|
+  | `NewArena` | `(size uint64)` | `(size uint64, align uint64)` |
+  | `NewPool` | `(cfg AllocatorConfig)` | `(cfg AllocatorConfig, align uint64)` |
+  | `NewFreeList` | `(cfg FreeListConfig)` | `(cfg FreeListConfig, align uint64)` |
+  | `NewShardedFreeList` | `(cfg FreeListConfig, numShards int)` | `(cfg FreeListConfig, align uint64, numShards int)` |
+
+  Passing `0` selects the default 64-byte alignment (AVX-512 / VMOVAPS safe).
+  Non-power-of-2 values return an error. Previously, alignment was hardcoded
+  to 8 bytes.
+
+- **HashMap values must be off-heap pointers.** The GC never scans the mmap'd
+  bucket array — Go heap pointers stored in the map are invisible to the
+  collector and will be freed. Use Arena, FreeList, Pool, or ShardedFreeList
+  allocations for all values. The race detector's checkptr instrumentation
+  catches Go heap pointers at test time.
+
+### Fixed
+
+- `mapState.base` changed from `uintptr` to `unsafe.Pointer` with
+  single-expression pointer arithmetic to satisfy `checkptr` under `-race`.
+- HashMap tests and benchmarks use Arena-allocated off-heap values, consistent
+  with every other allocator in the package. Full `-race` + `checkptr` pass.
 
 ### Added
 
