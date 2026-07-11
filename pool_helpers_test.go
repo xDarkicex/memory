@@ -57,6 +57,30 @@ func TestPoolAlloc_MultipleDistinct(t *testing.T) {
 	}
 }
 
+func TestPoolAlloc_LargeTypeDoesNotCreateHeapShadow(t *testing.T) {
+	type largeChunk [64 * 1024]uint64
+
+	pool, err := NewPool(AllocatorConfig{
+		PoolSize:  64 * 1024 * 1024,
+		SlabSize:  64 * 1024 * 1024,
+		SlabCount: 1,
+		Prealloc:  true,
+	}, 64)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Free()
+
+	allocs := testing.AllocsPerRun(32, func() {
+		if _, err := PoolAlloc[largeChunk](pool); err != nil {
+			t.Fatalf("PoolAlloc: %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("large off-heap allocation created %.0f Go heap allocations", allocs)
+	}
+}
+
 func TestPoolSlice_Basic(t *testing.T) {
 	pool := testPool(t)
 

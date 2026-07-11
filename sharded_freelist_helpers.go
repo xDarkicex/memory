@@ -25,8 +25,8 @@ import "unsafe"
 // The returned *T points into off-heap mmap memory invisible to the Go GC.
 // Free with ShardedFreeListDealloc or ShardedFreeListRetire.
 func ShardedFreeListAlloc[T any](sfl *ShardedFreeList) (*T, error) {
-	var zero T
-	if uint64(unsafe.Sizeof(zero))+metaOffset > sfl.cfg.SlotSize {
+	var typed *T
+	if uint64(unsafe.Sizeof(*typed))+metaOffset > sfl.cfg.SlotSize {
 		return nil, ErrSlotTooSmall
 	}
 

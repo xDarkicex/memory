@@ -32,8 +32,8 @@ const metaOffset = 16
 // Free with FreeListDealloc; letting it escape without freeing leaks off-heap
 // memory permanently.
 func FreeListAlloc[T any](fl *FreeList) (*T, error) {
-	var zero T
-	if uint64(unsafe.Sizeof(zero))+metaOffset > fl.SlotSize() {
+	var typed *T
+	if uint64(unsafe.Sizeof(*typed))+metaOffset > fl.SlotSize() {
 		return nil, ErrSlotTooSmall
 	}
 

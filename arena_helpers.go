@@ -27,8 +27,8 @@ import "unsafe"
 //	copy(cat.Name[:], "Whiskers")
 //	cat.Age = 3
 func ArenaAlloc[T any](arena *Arena) (*T, error) {
-	var zero T
-	ptr, err := arena.Alloc(uint64(unsafe.Sizeof(zero)))
+	var typed *T
+	ptr, err := arena.Alloc(uint64(unsafe.Sizeof(*typed)))
 	if err != nil {
 		return nil, err
 	}
@@ -59,8 +59,8 @@ func ArenaSlice[T any](arena *Arena, cap int) ([]T, error) {
 	if cap == 0 {
 		return nil, nil
 	}
-	var zero T
-	sz := unsafe.Sizeof(zero) * uintptr(cap)
+	var typed *T
+	sz := unsafe.Sizeof(*typed) * uintptr(cap)
 	ptr, err := arena.Alloc(uint64(sz))
 	if err != nil {
 		return nil, err

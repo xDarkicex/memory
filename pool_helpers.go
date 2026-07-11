@@ -21,8 +21,8 @@ import "unsafe"
 //	if err != nil { ... }
 //	vec.X, vec.Y, vec.Z = 1, 2, 3
 func PoolAlloc[T any](pool *Pool) (*T, error) {
-	var zero T
-	buf, err := pool.Allocate(uint64(unsafe.Sizeof(zero)))
+	var ptr *T
+	buf, err := pool.Allocate(uint64(unsafe.Sizeof(*ptr)))
 	if err != nil {
 		return nil, err
 	}
@@ -52,8 +52,8 @@ func PoolSlice[T any](pool *Pool, cap int) ([]T, error) {
 	if cap == 0 {
 		return nil, nil
 	}
-	var zero T
-	sz := unsafe.Sizeof(zero) * uintptr(cap)
+	var ptr *T
+	sz := unsafe.Sizeof(*ptr) * uintptr(cap)
 	buf, err := pool.Allocate(uint64(sz))
 	if err != nil {
 		return nil, err
