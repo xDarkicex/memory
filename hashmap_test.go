@@ -31,6 +31,41 @@ func TestHashMap_BasicPutGet(t *testing.T) {
 	}
 }
 
+func TestHashMap_PutIfAbsent(t *testing.T) {
+	m, err := NewHashMap(HashMapConfig{Capacity: 1024, Alignment: 128})
+	if err != nil {
+		t.Fatalf("Failed to init: %v", err)
+	}
+
+	arena, _ := NewArena(4096, 8)
+	defer arena.Free()
+	first, _ := arena.Alloc(8)
+	second, _ := arena.Alloc(8)
+	*(*int)(first) = 1
+	*(*int)(second) = 2
+
+	got, inserted := m.PutIfAbsent(42, first)
+	if !inserted {
+		t.Fatalf("first PutIfAbsent did not insert")
+	}
+	if got != first {
+		t.Fatalf("first PutIfAbsent returned wrong pointer: got %v want %v", got, first)
+	}
+
+	got, inserted = m.PutIfAbsent(42, second)
+	if inserted {
+		t.Fatalf("second PutIfAbsent unexpectedly inserted")
+	}
+	if got != first {
+		t.Fatalf("second PutIfAbsent returned wrong pointer: got %v want %v", got, first)
+	}
+
+	stored, ok := m.Get(42)
+	if !ok || stored != first {
+		t.Fatalf("Get after PutIfAbsent got %v ok=%v want %v", stored, ok, first)
+	}
+}
+
 func TestHashMap_Delete(t *testing.T) {
 	m, err := NewHashMap(HashMapConfig{Capacity: 1024, Alignment: 128})
 	if err != nil {

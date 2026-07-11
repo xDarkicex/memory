@@ -50,6 +50,16 @@ func (m *TypedMap[V]) Put(key uint64, val *V) {
 	m.raw.Put(key, unsafe.Pointer(val))
 }
 
+// PutIfAbsent inserts val only when key is absent.
+// It returns the existing or inserted value and whether this call inserted it.
+func (m *TypedMap[V]) PutIfAbsent(key uint64, val *V) (*V, bool) {
+	ptr, inserted := m.raw.PutIfAbsent(key, unsafe.Pointer(val))
+	if ptr == nil {
+		return nil, inserted
+	}
+	return (*V)(ptr), inserted
+}
+
 // Get retrieves a value wait-free from the map.
 func (m *TypedMap[V]) Get(key uint64) (*V, bool) {
 	ptr, found := m.raw.Get(key)
