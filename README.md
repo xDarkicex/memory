@@ -15,13 +15,14 @@ vector database daemon, serving embeddings at scale across Linux, macOS, and Win
 48+ hours of continuous `-race` stress testing with zero crashes, zero data
 races, and zero memory leaks.
 
-Package `memory` provides four off-heap allocator types:
+Package `memory` provides four off-heap allocators and two off-heap maps:
 
 - **`Arena`** — variable-size bump-pointer allocator (CAS, lock-free)
 - **`Pool`** — variable-size slab allocator (CAS, lock-free, bulk `Reset()`)
 - **`FreeList`** — fixed-size lock-free allocator (Treiber stack, per-object `Deallocate()`)
 - **`ShardedFreeList`** — sharded fixed-size allocator (per-shard LIFO caches + Hyaline SMR, `Deallocate()` or `Retire()`)
 - **`HashMap`** — zero-allocation concurrent flat-array open-addressed map (cooperative migration, 100% off-heap)
+- **`IDMap`** — collision-correct concurrent string/byte ID map (copied off-heap keys, SWAR filtering, cooperative migration)
 
 Allocations are served from mmap'd slabs; the Go GC never scans this memory.
 Safe memory reclamation (SMR) for concurrent workloads is provided by Hyaline
@@ -52,6 +53,7 @@ go get github.com/xDarkicex/memory
 | `FreeList` | Fixed-size (Treiber stack) | Per-object `Deallocate()` | Lock-free | Fixed-size object pools, per-vector allocations |
 | `ShardedFreeList` | Fixed-size (sharded + Hyaline SMR) | Per-object `Deallocate()` or `Retire()` | Lock-free, sharded by goroutine | High-concurrency fixed-size pools, vector DBs |
 | `HashMap` | Flat array (128B buckets) | Tombstone-based | Lock-free, cooperative migration | High-concurrency lookups, RAG indices, zero-GC maps |
+| `IDMap` | String/byte IDs (128B buckets) | Tombstone-based | CAS publication, cooperative migration | External IDs, document registries, zero-GC key storage |
 
 ## Quickstart
 
@@ -124,6 +126,33 @@ valPtr, _ := arena.Alloc(8)
 hm.Put(hashKey, valPtr)
 val, ok := hm.Get(hashKey)
 hm.Delete(hashKey)
+```
+
+### IDMap (off-heap string/byte ID map)
+
+IDMap copies keys into a bounded off-heap arena and stores only off-heap value
+pointers. Deleted key bytes remain valid until `Free`, so concurrent readers
+never observe reclaimed key storage. Size `KeyBytes` for all unique IDs written
+over the map's lifetime, including deleted IDs.
+
+```go
+ids, err := memory.NewIDMap(memory.IDMapConfig{
+    Capacity: 1_000_000,
+    KeyBytes: 64 * 1024 * 1024,
+})
+if err != nil {
+    panic(err)
+}
+defer ids.Free()
+
+arena, _ := memory.NewArena(4096, 8)
+defer arena.Free()
+value, _ := arena.Alloc(8)
+
+_ = ids.PutString("document-01JZ...", value)
+ptr, found := ids.GetString("document-01JZ...")
+ids.DeleteString("document-01JZ...")
+_, _ = ptr, found
 ```
 
 ### ShardedFreeList (fixed-size, high concurrency, Hyaline SMR)
@@ -238,8 +267,16 @@ memory.FreeListDealloc(fl, hdr)
 
 // HashMap: typed map wrapper
 typedMap, err := memory.NewTypedMap[Header](cfg)
-typedMap.Put(123, &Header{ID: 42})
-hdr, found := typedMap.Get(123)
+mapHeader, err := memory.ArenaAlloc[Header](arena)
+mapHeader.ID = 42
+typedMap.Put(123, mapHeader)
+mapHeader, found := typedMap.Get(123)
+
+// IDMap: typed string/byte ID wrapper; Header must be off heap
+typedIDs, err := memory.NewTypedIDMap[Header](idCfg)
+idHeader, err := memory.ArenaAlloc[Header](arena)
+typedIDs.PutString("document-01JZ...", idHeader)
+idHeader, found = typedIDs.GetString("document-01JZ...")
 ```
 
 | Helper | Allocator | Description |
@@ -260,6 +297,7 @@ hdr, found := typedMap.Get(123)
 | `FreeListSlotFor[T](fl, *T) []byte` | FreeList | Get backing slot for `*T` |
 | `MustFreeListAlloc[T](fl) *T` | FreeList | Panic-on-error variant |
 | `NewTypedMap[V](cfg) *TypedMap[V]` | HashMap | Generic zero-alloc Map wrapper |
+| `NewTypedIDMap[V](cfg) *TypedIDMap[V]` | IDMap | Typed string/byte ID map wrapper |
 
 ### Mmap
 

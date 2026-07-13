@@ -1,5 +1,21 @@
 # Changelog
 
+## [v1.2.1] — 2026-07-12
+
+### Added
+
+- **`IDMap`** — collision-correct concurrent string/byte ID map with mmap-backed
+  128-byte buckets and copied off-heap keys. The hot path uses CAS publication,
+  SWAR fingerprint filtering, exact byte equality, tombstone reuse, and
+  cooperative multi-generation resize.
+- **`TypedIDMap[V]`** — type-safe wrapper for off-heap values keyed by string or
+  byte IDs.
+- IDMap race, forced-resize, same-key contention, exact-hash-collision,
+  allocation-contract, and cross-platform tests.
+- IDMap benchmarks against `sync.Map` and Go maps. On Apple M2, steady-state
+  reads measure about 36.9 ns, updates 47.9 ns, and both remain 0 B/op with
+  0 allocs/op.
+
 ## [v1.1.0] — 2026-07-06
 
 ### Added
