@@ -11,6 +11,14 @@ func mmapAnonymous(size int) ([]byte, error) {
 	return unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
 }
 
+// MmapAnonymous allocates size bytes of anonymous off-heap memory via mmap.
+// The returned slice is invisible to the Go garbage collector — no write
+// barriers, no scanning, no GC pressure. The caller is responsible for
+// releasing it with Munmap when done.
+func MmapAnonymous(size int) ([]byte, error) {
+	return mmapAnonymous(size)
+}
+
 func MmapFileReadOnly(fd int, offset int64, size int) ([]byte, error) {
 	return MmapFile(fd, offset, size, false)
 }

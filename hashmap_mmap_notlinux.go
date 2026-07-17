@@ -13,3 +13,8 @@ func mmapRawAnonymous(size uint64) (uintptr, error) {
 func munmapRaw(addr uintptr, size uint64) error {
 	return errors.New("zero-allocation off-heap unmapping not supported on this OS")
 }
+
+// MmapAnonymous is not supported on this platform.
+func MmapAnonymous(_ int) ([]byte, error) {
+	return nil, errors.New("MmapAnonymous not supported on this OS")
+}

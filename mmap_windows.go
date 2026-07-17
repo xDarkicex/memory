@@ -16,6 +16,14 @@ func mmapAnonymous(size int) ([]byte, error) {
 	return unsafe.Slice((*byte)(unsafe.Pointer(addr)), size), nil
 }
 
+// MmapAnonymous allocates size bytes of anonymous off-heap memory.
+// On Windows this is backed by VirtualAlloc rather than mmap, but is
+// otherwise semantically identical: invisible to the GC, must be
+// released with Munmap when done.
+func MmapAnonymous(size int) ([]byte, error) {
+	return mmapAnonymous(size)
+}
+
 func munmap(data []byte) error {
 	return windows.VirtualFree(uintptr(unsafe.Pointer(unsafe.SliceData(data))), 0, windows.MEM_RELEASE)
 }
