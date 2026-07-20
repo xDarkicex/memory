@@ -122,3 +122,10 @@ type Bucket struct {
 
 // ErrNeedsResize is an internal signal that a bucket is full and a resize is needed.
 var ErrNeedsResize = errors.New("hashmap needs resize")
+
+// hashMapSMRFreeFn is the Hyaline batch-free callback for HashMap migration.
+// batchHead points to the mmap'd region header; offset 64 stores the allocation size.
+func hashMapSMRFreeFn(batchHead unsafe.Pointer) {
+	size := *(*uint64)(unsafe.Add(batchHead, 64))
+	_ = munmapRaw(uintptr(batchHead), size)
+}

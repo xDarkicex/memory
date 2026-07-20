@@ -1,5 +1,33 @@
 # Changelog
 
+## [v1.2.3] — 2026-07-20
+
+### Added
+
+- **`HashMap.Range`** — iterates all entries with a callback
+  (`func(k uint64, v unsafe.Pointer) bool`), matching `sync.Map.Range`
+  semantics. Returns `false` to stop early. Completes any in-flight
+  migration before iterating so the callback sees a stable generation.
+
+### Fixed
+
+- **HashMap SMR wiring (critical).** `Get`, `Put`, `PutIfAbsent`, and
+  `Delete` now participate in Hyaline safe memory reclamation via
+  `hyalineEnter`/`hyalineLeave`. Previously, a concurrent resize could
+  `munmap` a bucket array while a reader was still walking it — a
+  use-after-free. The migration path also now explicitly flushes its
+  Hyaline batch, fixing a leak where old mmap regions were never freed
+  because the single-node batch never reached the organically-triggered
+  flush threshold.
+
+- **ShardedFreeList exhaustion recovery.** Added `hyalineDrainAll`, which
+  CAS-strips queued-retired node chains from all 64 Hyaline slots while
+  preserving active readers' occupation flags. The allocating goroutine
+  now drains the slots synchronously on pool exhaustion instead of
+  returning `ErrPoolExhausted` and waiting for reader goroutines to
+  cycle through `HyalineLeave`. This eliminates a multi-second stall
+  (or permanent teardown failure) observed under extreme concurrency.
+
 ## [v1.2.1] — 2026-07-12
 
 ### Added

@@ -168,9 +168,12 @@ func (sfl *ShardedFreeList) Allocate() ([]byte, error) {
 				goto fill
 			}
 			if err2 != nil {
-				// Pool exhaustion: memory is likely stranded in per-shard Hyaline batches.
-				// Force flush all partial batches to release stranded nodes.
+				// Pool exhaustion: memory is stranded in per-shard Hyaline batches.
+				// Step 1: Force-flush all partial batches into Hyaline slot chains.
 				sfl.forceReclamation()
+				// Step 2: Drain all 64 Hyaline slots inline — extract node chains,
+				// decrement batch ref counts, and free batches synchronously.
+				hyalineDrainAll(&sfl.hyHeader, sfl.hyalineFreeFn)
 				count2, err2 = sfl.global.BatchAllocate(slots[:])
 				if count2 > 0 {
 					count = count2

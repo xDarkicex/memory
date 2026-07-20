@@ -120,6 +120,53 @@ func hyalineLeave(h *hyalineHeader, slotIdx int, freeFn func(batchHead unsafe.Po
 	}
 }
 
+// hyalineDrainAll drains queued retired nodes from all Hyaline slots.
+// Unlike hyalineLeave, this is NOT tied to a reader's enter/exit cycle.
+// It atomically strips node chains from every slot while preserving the
+// occupation flag (0x1) for slots that have active readers. Called during
+// pool exhaustion to force immediate reclamation rather than waiting for
+// reader goroutines to cycle through hyalineLeave.
+//
+//go:nocheckptr
+func hyalineDrainAll(h *hyalineHeader, freeFn func(batchHead unsafe.Pointer)) {
+	var freeList unsafe.Pointer
+
+	for i := 0; i < hyalineK; i++ {
+		slot := &h.slots[i]
+		for {
+			old := slot.head.Load()
+			chain := old &^ 0x1
+			if chain == 0 {
+				break
+			}
+			// Preserve the occupation flag so active readers stay protected.
+			newVal := old & 0x1
+			if slot.head.CompareAndSwap(old, newVal) {
+				curr := chain
+				for curr != 0 {
+					nodePtr := unsafe.Pointer(uintptr(curr))
+					next := *(*uint64)(nodePtr)              // offset 0: next
+					batchHead := ptrAt(nodePtr, 8)           // offset 8: batch_head
+					refsPtr := (*int64)(unsafe.Add(batchHead, 24)) // offset 24: refs
+
+					if atomic.AddInt64(refsPtr, -1) == 0 {
+						storePtr(batchHead, 0, freeList)
+						freeList = batchHead
+					}
+					curr = next
+				}
+				break
+			}
+		}
+	}
+
+	for freeList != nil {
+		batchHead := freeList
+		freeList = ptrAt(batchHead, 0)
+		freeFn(batchHead)
+	}
+}
+
 // hyalineBatch is a per-shard accumulation buffer for retired nodes.
 type hyalineBatch struct {
 	first   unsafe.Pointer // most-recently-added node

@@ -36,15 +36,15 @@ func (h *HashMap) helpMigrate(s *mapState, bucketIdx uint64) {
 				if rem == 0 {
 					// We finished migrating the entire map! Promote next to current.
 					if h.state.CompareAndSwap(s, s.next) {
-						// Hook into Hyaline SMR: enqueue the old mmap'd region for deferred munmapRaw
+						// Hook into Hyaline SMR: enqueue the old mmap'd region for deferred
+						// munmapRaw. Flush eagerly — the batch holds a single node so the
+						// threshold (hyalineK+1) would never fire organically.
 						var batch hyalineBatch
 						hyalineBatchInit(&batch)
 
 						nodePtr := unsafe.Pointer(uintptr(s.base) - 128)
-						hyalineRetire(&h.smrHeader, &batch, nodePtr, func(batchHead unsafe.Pointer) {
-							size := *(*uint64)(unsafe.Add(batchHead, 64))
-							_ = munmapRaw(uintptr(batchHead), size)
-						})
+						hyalineRetire(&h.smrHeader, &batch, nodePtr, hashMapSMRFreeFn)
+						hyalineRetireFlush(&h.smrHeader, &batch, hashMapSMRFreeFn)
 					}
 				}
 				return
