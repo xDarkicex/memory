@@ -35,17 +35,11 @@ func (h *HashMap) helpMigrate(s *mapState, bucketIdx uint64) {
 				rem := s.bucketsRemaining.Add(^uint64(0)) // decrement
 				if rem == 0 {
 					// We finished migrating the entire map! Promote next to current.
-					if h.state.CompareAndSwap(s, s.next) {
-						// Hook into Hyaline SMR: enqueue the old mmap'd region for deferred
-						// munmapRaw. Flush eagerly — the batch holds a single node so the
-						// threshold (hyalineK+1) would never fire organically.
-						var batch hyalineBatch
-						hyalineBatchInit(&batch)
-
-						nodePtr := unsafe.Pointer(uintptr(s.base) - 128)
-						hyalineRetire(&h.smrHeader, &batch, nodePtr, hashMapSMRFreeFn)
-						hyalineRetireFlush(&h.smrHeader, &batch, hashMapSMRFreeFn)
-					}
+					next := s.next
+					// A one-node mmap retirement cannot acknowledge every active
+					// Hyaline reader. Preserve this generation until explicit Free.
+					next.retired.CompareAndSwap(nil, s)
+					h.state.CompareAndSwap(s, next)
 				}
 				return
 			}
@@ -114,7 +108,6 @@ func (h *HashMap) triggerResize() error {
 	if err != nil {
 		return err
 	}
-	*(*uint64)(unsafe.Add(unsafe.Pointer(addr), 64)) = allocSize
 	nextState := &mapState{
 		base:     unsafe.Pointer(addr + 128),
 		size:     bucketCount,
@@ -128,6 +121,7 @@ func (h *HashMap) triggerResize() error {
 		mmapSize: s.mmapSize,
 		next:     nextState,
 	}
+	newState.retired.Store(s.retired.Load())
 	newState.bucketsRemaining.Store(s.size)
 	// Activate migration phase
 	if !h.state.CompareAndSwap(s, newState) {

@@ -39,10 +39,6 @@ func storeBucketVal(b *Bucket, idx uint32, val unsafe.Pointer) {
 // (Arena, FreeList, Pool, or ShardedFreeList allocation). The map does not keep
 // Go heap pointers alive — the GC never scans the mmap'd bucket array.
 func (h *HashMap) Put(key uint64, val unsafe.Pointer) {
-	slotIdx := int(fastrand()) & (hyalineK - 1)
-	hyalineEnter(&h.smrHeader, slotIdx)
-	defer hyalineLeave(&h.smrHeader, slotIdx, hashMapSMRFreeFn)
-
 	for {
 		s := h.state.Load()
 		if s.next != nil {
@@ -65,10 +61,6 @@ func (h *HashMap) Put(key uint64, val unsafe.Pointer) {
 // PutIfAbsent inserts key/value only when key is not already present.
 // It returns the existing value and false when the key already exists.
 func (h *HashMap) PutIfAbsent(key uint64, val unsafe.Pointer) (unsafe.Pointer, bool) {
-	slotIdx := int(fastrand()) & (hyalineK - 1)
-	hyalineEnter(&h.smrHeader, slotIdx)
-	defer hyalineLeave(&h.smrHeader, slotIdx, hashMapSMRFreeFn)
-
 	for {
 		s := h.state.Load()
 		if s.next != nil {
@@ -365,10 +357,6 @@ func (h *HashMap) putInnerTombstone(s *mapState, key uint64, val unsafe.Pointer,
 // Get retrieves a value from the map. The returned pointer is the same off-heap
 // pointer that was passed to Put.
 func (h *HashMap) Get(key uint64) (unsafe.Pointer, bool) {
-	slotIdx := int(fastrand()) & (hyalineK - 1)
-	hyalineEnter(&h.smrHeader, slotIdx)
-	defer hyalineLeave(&h.smrHeader, slotIdx, hashMapSMRFreeFn)
-
 	for {
 		s := h.state.Load()
 		if s.next != nil {
@@ -429,10 +417,6 @@ func (h *HashMap) getInner(s *mapState, key uint64) (unsafe.Pointer, bool) {
 // Delete removes a value from the map using tombstones. The caller is responsible
 // for freeing the off-heap value separately — Delete only removes the map entry.
 func (h *HashMap) Delete(key uint64) bool {
-	slotIdx := int(fastrand()) & (hyalineK - 1)
-	hyalineEnter(&h.smrHeader, slotIdx)
-	defer hyalineLeave(&h.smrHeader, slotIdx, hashMapSMRFreeFn)
-
 	for {
 		s := h.state.Load()
 		if s.next != nil {
@@ -509,10 +493,6 @@ func (h *HashMap) deleteInner(s *mapState, key uint64) bool {
 // Range does not snapshot — concurrent mutations during iteration may or may not
 // be visible, matching sync.Map.Range semantics.
 func (h *HashMap) Range(fn func(k uint64, v unsafe.Pointer) bool) {
-	slotIdx := int(fastrand()) & (hyalineK - 1)
-	hyalineEnter(&h.smrHeader, slotIdx)
-	defer hyalineLeave(&h.smrHeader, slotIdx, hashMapSMRFreeFn)
-
 	s := h.state.Load()
 	if s.next != nil {
 		h.helpMigrateAll(s)

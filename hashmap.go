@@ -6,12 +6,6 @@ import (
 	"unsafe"
 )
 
-//go:linkname runtime_procPin runtime.procPin
-func runtime_procPin() int
-
-//go:linkname runtime_procUnpin runtime.procUnpin
-func runtime_procUnpin()
-
 // HashMapConfig defines the parameters for the zero-allocation map.
 // Alignment ensures buckets are properly padded for AVX-512 vector loads.
 type HashMapConfig struct {
@@ -19,13 +13,15 @@ type HashMapConfig struct {
 	Capacity  uint64
 }
 
-// mapState holds the current active mapping.
+// mapState holds one mmap generation. retired chains generations that have
+// been superseded by resize but cannot be unmapped until HashMap.Free.
 type mapState struct {
 	base             unsafe.Pointer
 	size             uint64
 	mmapSize         uint64
 	bucketsRemaining atomic.Uint64
 	next             *mapState
+	retired          atomic.Pointer[mapState]
 }
 
 const (
@@ -38,16 +34,17 @@ const (
 // HashMap is a cybernetic, zero-allocation, wait-free concurrent map backed by
 // mmap'd off-heap memory. The entire bucket array lives outside the Go heap — the
 // GC never scans it. The map uses CAS-based publishing with cooperative migration
-// (Dr. Cliff Click's wait-free hash map design).
+// (Dr. Cliff Click's wait-free hash map design). Superseded mmap generations are
+// retained until Free: a single mmap is not a valid Hyaline batch, so eagerly
+// retiring it cannot protect every concurrent reader.
 //
 // All values stored in the map must be off-heap pointers (Arena, FreeList, Pool,
 // or ShardedFreeList allocations). Go heap pointers stored in the map are invisible
 // to the GC and will be collected. The race detector's checkptr instrumentation
 // catches Go heap pointers at test time.
 type HashMap struct {
-	cfg       HashMapConfig
-	state     atomic.Pointer[mapState]
-	smrHeader hyalineHeader
+	cfg   HashMapConfig
+	state atomic.Pointer[mapState]
 }
 
 // NewHashMap creates a new lock-free map mapped directly to physical RAM.
@@ -86,7 +83,8 @@ func NewHashMap(cfg HashMapConfig) (*HashMap, error) {
 	bucketCount |= bucketCount >> 32
 	bucketCount++
 
-	// 128 bytes per bucket + 128 bytes for Hyaline SMR tracking header
+	// 128 bytes per bucket plus a 128-byte prefix so the bucket base remains
+	// 128-byte aligned. The prefix is retained for stable mapping layout.
 	allocSize := bucketCount*128 + 128
 
 	addr, err := mmapRawAnonymous(allocSize)
@@ -97,10 +95,6 @@ func NewHashMap(cfg HashMapConfig) (*HashMap, error) {
 	h := &HashMap{
 		cfg: cfg,
 	}
-	hyalineHeaderInit(&h.smrHeader)
-
-	// Store mmapSize at offset 64 of the SMR header so freeFn can read it
-	*(*uint64)(unsafe.Pointer(addr + 64)) = allocSize
 
 	h.state.Store(&mapState{
 		base:     unsafe.Pointer(addr + 128),
@@ -109,6 +103,30 @@ func NewHashMap(cfg HashMapConfig) (*HashMap, error) {
 	})
 
 	return h, nil
+}
+
+// Free releases every mmap generation owned by the map. It must not race with
+// Put, PutIfAbsent, Get, Delete, or Range; after Free the map is invalid.
+func (h *HashMap) Free() error {
+	if h == nil {
+		return nil
+	}
+	state := h.state.Swap(nil)
+	var firstErr error
+	// A quiescent caller can destroy a map while migration is installed but
+	// before promotion. That successor is not part of the retired chain yet.
+	if state != nil && state.next != nil {
+		if err := munmapRaw(uintptr(state.next.base)-128, state.next.mmapSize); err != nil {
+			firstErr = err
+		}
+	}
+	for state != nil {
+		if err := munmapRaw(uintptr(state.base)-128, state.mmapSize); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		state = state.retired.Load()
+	}
+	return firstErr
 }
 
 // Bucket perfectly aligns to a 128-byte cache line boundary.
@@ -122,10 +140,3 @@ type Bucket struct {
 
 // ErrNeedsResize is an internal signal that a bucket is full and a resize is needed.
 var ErrNeedsResize = errors.New("hashmap needs resize")
-
-// hashMapSMRFreeFn is the Hyaline batch-free callback for HashMap migration.
-// batchHead points to the mmap'd region header; offset 64 stores the allocation size.
-func hashMapSMRFreeFn(batchHead unsafe.Pointer) {
-	size := *(*uint64)(unsafe.Add(batchHead, 64))
-	_ = munmapRaw(uintptr(batchHead), size)
-}

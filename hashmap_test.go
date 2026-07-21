@@ -234,6 +234,11 @@ func TestHashMap_ConcurrentResizeCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to init: %v", err)
 	}
+	defer func() {
+		if err := m.Free(); err != nil {
+			t.Fatalf("HashMap.Free: %v", err)
+		}
+	}()
 
 	arena, _ := NewArena(4096, 8)
 	defer arena.Free()
@@ -269,4 +274,55 @@ func TestHashMap_ConcurrentResizeCompletes(t *testing.T) {
 		}
 	}
 	runtime.KeepAlive(val)
+}
+
+func TestHashMap_RetainsResizedGenerationsUntilFree(t *testing.T) {
+	m, err := NewHashMap(HashMapConfig{Capacity: 8, Alignment: 128})
+	if err != nil {
+		t.Fatalf("NewHashMap: %v", err)
+	}
+	arena, err := NewArena(4096, 8)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer arena.Free()
+	val, err := arena.Alloc(8)
+	if err != nil {
+		t.Fatalf("Arena.Alloc: %v", err)
+	}
+
+	for key := uint64(0); key < 256; key++ {
+		m.Put(key, val)
+	}
+
+	current := m.state.Load()
+	generations := 0
+	for state := current; state != nil; state = state.retired.Load() {
+		generations++
+	}
+	if generations < 2 {
+		t.Fatalf("retained generations = %d, want at least 2 after repeated resize", generations)
+	}
+	if err := m.Free(); err != nil {
+		t.Fatalf("HashMap.Free: %v", err)
+	}
+	if state := m.state.Load(); state != nil {
+		t.Fatalf("state remains after Free: %p", state)
+	}
+}
+
+func TestHashMap_FreeReclaimsUnpromotedSuccessor(t *testing.T) {
+	m, err := NewHashMap(HashMapConfig{Capacity: 8, Alignment: 128})
+	if err != nil {
+		t.Fatalf("NewHashMap: %v", err)
+	}
+	if err := m.triggerResize(); err != nil {
+		t.Fatalf("triggerResize: %v", err)
+	}
+	if state := m.state.Load(); state == nil || state.next == nil {
+		t.Fatal("resize successor was not installed")
+	}
+	if err := m.Free(); err != nil {
+		t.Fatalf("HashMap.Free: %v", err)
+	}
 }

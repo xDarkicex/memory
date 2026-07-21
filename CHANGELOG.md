@@ -1,5 +1,17 @@
 # Changelog
 
+## [v1.2.5] — 2026-07-20
+
+### Fixed
+
+- **HashMap concurrent resize lifetime.** Removed the invalid one-node
+  Hyaline retirement used for old mmap generations. A Hyaline batch cannot
+  acknowledge every live reader when it contains fewer nodes than occupied
+  slots, and random shared slots could clear another operation's protection.
+  Resized generations are now retained through the map lifetime and released
+  together by the new quiescent-only `HashMap.Free()` destructor. Geometric
+  resize growth bounds retained bucket payload below twice the active mapping.
+
 ## [v1.2.4] — 2026-07-20
 
 ### Fixed

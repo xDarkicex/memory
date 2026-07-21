@@ -73,3 +73,12 @@ func (m *TypedMap[V]) Get(key uint64) (*V, bool) {
 func (m *TypedMap[V]) Delete(key uint64) bool {
 	return m.raw.Delete(key)
 }
+
+// Free releases the underlying HashMap generations. It must not race with map
+// operations; after Free the TypedMap is invalid.
+func (m *TypedMap[V]) Free() error {
+	if m == nil {
+		return nil
+	}
+	return m.raw.Free()
+}
