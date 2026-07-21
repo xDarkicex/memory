@@ -25,9 +25,9 @@
 //     head. For GC-isolated workloads with small heaps this is typically safe
 //     (no multi-ms STW pauses). LA57 kernels (57-bit VA) are rejected at init.
 //   - Reset is not concurrent-safe (same contract as Pool.Reset).
-//   - Double-free detection via slotGen allocates 8 bytes per slot on the Go
-//     heap (e.g. 8MB for a 64MB pool with 64B slots). This is a deliberate
-//     tradeoff for safety; disable by setting slotGen to nil if memory is tight.
+//   - Double-free detection uses an mmap-backed generation table. Its storage
+//     scales with pool capacity but is kept outside the Go heap alongside the
+//     slots themselves.
 
 package memory
 
@@ -130,12 +130,14 @@ type FreeList struct {
 	slabLen     atomic.Int32
 	slabCap     int
 
-	// Double-free detection: per-slot allocation sequence numbers.
-	// slotGen[slabStructIdx*slotsPerSlab + slotOffset] stores the allocSeq
-	// value at allocation time. Zero means the slot is free.
-	// Memory cost: 8 bytes per slot (e.g. 8MB for 64MB pool @ 64B slots).
-	slotGen  []atomic.Uint64
-	allocSeq atomic.Uint64
+	// Double-free detection: per-slot allocation sequence numbers. The table
+	// is an anonymous mmap rather than []atomic.Uint64 so a large off-heap pool
+	// never creates a matching capacity-proportional Go-heap allocation.
+	// slotGenBase points to slotGenLen consecutive, 8-byte-aligned atomics.
+	slotGenBase uintptr
+	slotGenLen  uint64
+	slotGenSize uint64
+	allocSeq    atomic.Uint64
 
 	// Pre-computed values.
 	slotsPerSlab uint64
@@ -193,7 +195,18 @@ func NewFreeList(cfg FreeListConfig, align uint64) (*FreeList, error) {
 		maxSlabs = cfg.SlabCount
 	}
 
+	if uint64(maxSlabs) > math.MaxUint64/slotsPerSlab {
+		return nil, errors.New("freelist slot generation table size overflows uint64")
+	}
 	totalSlots := uint64(maxSlabs) * slotsPerSlab
+	if totalSlots > math.MaxUint64/uint64(unsafe.Sizeof(atomic.Uint64{})) {
+		return nil, errors.New("freelist slot generation table byte size overflows uint64")
+	}
+	slotGenSize := totalSlots * uint64(unsafe.Sizeof(atomic.Uint64{}))
+	slotGenBase, err := mmapRawAnonymous(slotGenSize)
+	if err != nil {
+		return nil, fmt.Errorf("mmap slot generation table: %w", err)
+	}
 
 	fl := &FreeList{
 		cfg:          cfg,
@@ -203,7 +216,9 @@ func NewFreeList(cfg FreeListConfig, align uint64) (*FreeList, error) {
 		slabStructs:  make([]freelistSlab, maxSlabs),
 		slabBase:     make([]slabEntry, maxSlabs),
 		slabCap:      maxSlabs,
-		slotGen:      make([]atomic.Uint64, totalSlots),
+		slotGenBase:  slotGenBase,
+		slotGenLen:   totalSlots,
+		slotGenSize:  slotGenSize,
 	}
 	fl.cfg.SlotSize = slotSize
 
@@ -211,10 +226,12 @@ func NewFreeList(cfg FreeListConfig, align uint64) (*FreeList, error) {
 	// required by the tagged-pointer ABA scheme (see tagShift/ptrMask).
 	data, err := mmapAnonymous(PageSize)
 	if err != nil {
+		_ = fl.freeSlotGenerations()
 		return nil, fmt.Errorf("cannot validate VA space: %w", err)
 	}
 	if uintptr(unsafe.Pointer(&data[0]))>>tagShift != 0 {
 		munmap(data)
+		_ = fl.freeSlotGenerations()
 		return nil, ErrLA57
 	}
 	munmap(data)
@@ -222,7 +239,7 @@ func NewFreeList(cfg FreeListConfig, align uint64) (*FreeList, error) {
 	if cfg.Prealloc {
 		for i := 0; i < cfg.SlabCount; i++ {
 			if err := fl.growSlab(); err != nil {
-				fl.Reset()
+				_ = fl.Free()
 				return nil, err
 			}
 		}
@@ -256,6 +273,7 @@ func (fl *FreeList) reserve(size uint64) bool {
 // hitting an empty freelist simultaneously), this causes redundant
 // mmap+munmap pairs. This is a deliberate tradeoff — the double-check inside
 // the lock discards redundant slabs, and the window is brief in practice.
+//
 //go:nocheckptr
 func (fl *FreeList) growSlab() error {
 	slabSize := fl.cfg.SlabSize
@@ -355,15 +373,18 @@ func unpackTag(tagged uint64) uint16 {
 }
 
 // Slot metadata packing at offset 24:
-//   bits  0-23: structIdx (up to 16M slabs)
-//   bits 24-31: homeShard (up to 256 shards)
+//
+//	bits  0-23: structIdx (up to 16M slabs)
+//	bits 24-31: homeShard (up to 256 shards)
 func packSlotMeta(structIdx int32, homeShard uint8) uint32 {
 	return uint32(structIdx) | (uint32(homeShard) << 24)
 }
-func unpackStructIdx(meta uint32) int32  { return int32(meta & 0x00FFFFFF) }
+func unpackStructIdx(meta uint32) int32 { return int32(meta & 0x00FFFFFF) }
+
 // pushFree pushes a slot onto the free list. structIdx is the slab's index
 // in slabStructs, embedded at slot offset 24 as packed metadata so Allocate
 // can resolve it without a lock or binary search.
+//
 //go:nocheckptr
 func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 	for {
@@ -388,6 +409,7 @@ func (fl *FreeList) pushFree(ptr unsafe.Pointer, structIdx int32) {
 // fails due to tag mismatch, causing a retry. This stale read is harmless
 // (8-byte aligned read on off-heap memory) and is correct Treiber stack
 // behavior — the CAS validates consistency before returning.
+//
 //go:nocheckptr
 func (fl *FreeList) popFree() unsafe.Pointer {
 	for {
@@ -432,6 +454,7 @@ func (fl *FreeList) batchPop(buf []unsafe.Pointer) int {
 // Accounting is batched: allocated counter and allocSeq are updated once for
 // the batch, not per slot. slotGen is still set per slot (unavoidable).
 // Zero heap allocations — caller provides the slots buffer.
+//
 //go:nocheckptr
 func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
 	if len(slots) == 0 {
@@ -475,7 +498,7 @@ func (fl *FreeList) BatchAllocate(slots [][]byte) (int, error) {
 			si := fl.slotIndex(ptr, base, structIdx)
 			// Distribute sequence numbers: slot i gets lastSeq - (count-1-i).
 			seq := lastSeq - uint64(count-1-i)
-			fl.slotGen[si].Store(seq)
+			fl.slotGeneration(si).Store(seq)
 			slots[i] = unsafe.Slice((*byte)(ptr), int(slotSize))
 		}
 		return count, nil
@@ -490,6 +513,32 @@ func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) u
 	return uint64(structIdx)*fl.slotsPerSlab + uint64(offset)/fl.cfg.SlotSize
 }
 
+// slotGeneration returns the generation counter for a slot. The table is
+// anonymous mmap memory, page aligned by the kernel and naturally aligned for
+// atomic.Uint64. It remains live until Free unmaps it; Reset merely clears it.
+//
+//go:nocheckptr
+func (fl *FreeList) slotGeneration(index uint64) *atomic.Uint64 {
+	return (*atomic.Uint64)(unsafe.Add(unsafe.Pointer(fl.slotGenBase), uintptr(index*uint64(unsafe.Sizeof(atomic.Uint64{})))))
+}
+
+func (fl *FreeList) clearSlotGenerations(count uint64) {
+	for i := uint64(0); i < count; i++ {
+		fl.slotGeneration(i).Store(0)
+	}
+}
+
+func (fl *FreeList) freeSlotGenerations() error {
+	if fl.slotGenBase == 0 {
+		return nil
+	}
+	base, size := fl.slotGenBase, fl.slotGenSize
+	fl.slotGenBase = 0
+	fl.slotGenLen = 0
+	fl.slotGenSize = 0
+	return munmapRaw(base, size)
+}
+
 // === Public API ===
 
 // Allocate returns a fixed-size off-heap memory slot.
@@ -497,6 +546,7 @@ func (fl *FreeList) slotIndex(ptr unsafe.Pointer, base uintptr, structIdx int) u
 // Reads the owning structIdx from slot bytes [24:28] — embedded by pushFree —
 // to resolve the slab without a lock or binary search. This keeps the hot
 // path lock-free and independent of slab count.
+//
 //go:nocheckptr
 func (fl *FreeList) Allocate() ([]byte, error) {
 	if fl.freed.Load() {
@@ -523,7 +573,7 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 		// structIdx is embedded in the slot at offset 24 by pushFree.
 		// Read it directly — no lock, no binary search.
 		meta := *(*uint32)(unsafe.Add(ptr, 24))
-			structIdx := int(unpackStructIdx(meta))
+		structIdx := int(unpackStructIdx(meta))
 		base := uintptr(unsafe.Pointer(&fl.slabStructs[structIdx].data[0]))
 
 		slotSize := fl.cfg.SlotSize
@@ -531,13 +581,14 @@ func (fl *FreeList) Allocate() ([]byte, error) {
 
 		// Set double-free guard: store alloc sequence number.
 		seq := fl.allocSeq.Add(1)
-		fl.slotGen[fl.slotIndex(ptr, base, structIdx)].Store(seq)
+		fl.slotGeneration(fl.slotIndex(ptr, base, structIdx)).Store(seq)
 
 		return unsafe.Slice((*byte)(ptr), int(slotSize)), nil
 	}
 }
 
 // Deallocate returns a slot to the free list.
+//
 //go:nocheckptr
 func (fl *FreeList) Deallocate(slot []byte) error {
 	if len(slot) == 0 || uint64(len(slot)) != fl.cfg.SlotSize {
@@ -576,7 +627,7 @@ func (fl *FreeList) Deallocate(slot []byte) error {
 
 	// Double-free detection: check that the slot has a non-zero generation.
 	slotIdx := fl.slotIndex(ptr, base, structIdx)
-	if fl.slotGen[slotIdx].Swap(0) == 0 {
+	if fl.slotGeneration(slotIdx).Swap(0) == 0 {
 		return ErrDoubleDeallocation
 	}
 
@@ -626,19 +677,19 @@ func (fl *FreeList) findSlabIdxLocked(ptr unsafe.Pointer) (structIdx int, base u
 // Stats returns a point-in-time snapshot of allocator state.
 func (fl *FreeList) Stats() FreeListStats {
 	return FreeListStats{
-		Reserved:  fl.reserved.Load(),
-		Allocated: fl.allocated.Load(),
-		SlotSize:  fl.cfg.SlotSize,
-		SlabCount: fl.slabLen.Load(),
+		Reserved:   fl.reserved.Load(),
+		Allocated:  fl.allocated.Load(),
+		SlotSize:   fl.cfg.SlotSize,
+		SlabCount:  fl.slabLen.Load(),
 		CasRetries: fl.casRetries.Load(),
 	}
 }
 
 type FreeListStats struct {
-	Reserved  uint64
-	Allocated uint64
-	SlotSize  uint64
-	SlabCount int32
+	Reserved   uint64
+	Allocated  uint64
+	SlotSize   uint64
+	SlabCount  int32
 	CasRetries uint64
 }
 
@@ -660,13 +711,10 @@ func (fl *FreeList) Reset() {
 		fl.slabBase[i] = slabEntry{}
 	}
 
-	// Clear slot generation counters while still holding the lock.
-	// This must complete before slabLen is zeroed to prevent growSlab
-	// from reusing indices before they're cleared.
-	totalSlots := uint64(n) * fl.slotsPerSlab
-	for i := uint64(0); i < totalSlots; i++ {
-		fl.slotGen[i].Store(0)
-	}
+	// Clear generation counters while still holding the lock. This must
+	// complete before slabLen is zeroed to prevent growSlab from reusing
+	// indices before they are cleared.
+	fl.clearSlotGenerations(uint64(n) * fl.slotsPerSlab)
 
 	fl.slabLen.Store(0)
 	fl.slabMu.Unlock()
@@ -690,12 +738,6 @@ func (fl *FreeList) Free() error {
 		fl.slabBuf[i] = nil
 		fl.slabBase[i] = slabEntry{}
 	}
-	// Clear slot generation counters while still holding the lock.
-	totalSlots := uint64(n) * fl.slotsPerSlab
-	for i := uint64(0); i < totalSlots; i++ {
-		fl.slotGen[i].Store(0)
-	}
-
 	fl.slabLen.Store(0)
 	fl.slabMu.Unlock()
 
@@ -703,7 +745,7 @@ func (fl *FreeList) Free() error {
 	fl.reserved.Store(0)
 	fl.allocated.Store(0)
 	fl.freed.Store(true)
-	return nil
+	return fl.freeSlotGenerations()
 }
 
 // PreallocSlabCount reports the number of allocated slabs.

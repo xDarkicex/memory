@@ -81,7 +81,7 @@ func (sfl *ShardedFreeList) activateSlot(ptr unsafe.Pointer) {
 	structIdx := int(unpackStructIdx(meta))
 	base := uintptr(unsafe.Pointer(&sfl.global.slabStructs[structIdx].data[0]))
 	si := sfl.global.slotIndex(ptr, base, structIdx)
-	sfl.global.slotGen[si].Store(1)
+	sfl.global.slotGeneration(si).Store(1)
 }
 
 // setHomeShard writes the shard index into offset 40 without disturbing structIdx.
@@ -242,7 +242,7 @@ func (sfl *ShardedFreeList) Deallocate(slot []byte) error {
 	}
 
 	si := sfl.global.slotIndex(ptr, base, structIdx)
-	if sfl.global.slotGen[si].Swap(0) == 0 {
+	if sfl.global.slotGeneration(si).Swap(0) == 0 {
 		return ErrDoubleDeallocation
 	}
 
@@ -311,7 +311,7 @@ func (sfl *ShardedFreeList) Retire(slot []byte) error {
 	}
 
 	si := sfl.global.slotIndex(ptr, base, structIdx)
-	if sfl.global.slotGen[si].Swap(0) == 0 {
+	if sfl.global.slotGeneration(si).Swap(0) == 0 {
 		return ErrDoubleDeallocation
 	}
 

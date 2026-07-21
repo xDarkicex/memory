@@ -2,7 +2,9 @@ package memory
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 )
@@ -300,8 +302,6 @@ func TestPointerMaterializationRegression(t *testing.T) {
 	}
 }
 
-
-
 // --- Zero-allocation verification ---
 
 func TestFreeListZeroHeapAllocs(t *testing.T) {
@@ -328,7 +328,6 @@ func TestFreeListZeroHeapAllocs(t *testing.T) {
 		t.Errorf("Allocate/Deallocate cycle: got %d allocs/op, want 0", result.AllocsPerOp())
 	}
 }
-
 
 func TestFreeListAccessors(t *testing.T) {
 	cfg := DefaultFreeListConfig()
@@ -431,5 +430,49 @@ func TestNewFreeListSlotSizeMinimum(t *testing.T) {
 	defer fl.Free()
 	if fl.cfg.SlotSize != 64 {
 		t.Errorf("SlotSize = %d, want 64 (clamped from 16)", fl.cfg.SlotSize)
+	}
+}
+
+func TestFreeListGenerationTableDoesNotScaleGoHeap(t *testing.T) {
+	// A 512 MiB/64 B FreeList needs an 64 MiB generation table. That table is
+	// allocator metadata and must be mmap-backed: putting it on the Go heap
+	// would recreate the exact pressure the allocator is intended to avoid.
+	cfg := FreeListConfig{
+		PoolSize:  512 * 1024 * 1024,
+		SlotSize:  64,
+		SlabSize:  2 * 1024 * 1024,
+		SlabCount: 1,
+	}
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	fl, err := NewFreeList(cfg, 64)
+	if err != nil {
+		t.Fatalf("NewFreeList: %v", err)
+	}
+	if fl.slotGenBase == 0 {
+		t.Fatal("slot generation table was not mmap-backed")
+	}
+	if want := cfg.PoolSize / cfg.SlotSize * uint64(unsafe.Sizeof(atomic.Uint64{})); fl.slotGenSize != want {
+		t.Fatalf("slot generation table size = %d, want %d", fl.slotGenSize, want)
+	}
+
+	generationTableSize := fl.slotGenSize
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(fl)
+	if delta := int64(after.HeapAlloc) - int64(before.HeapAlloc); delta > 2*1024*1024 {
+		_ = fl.Free()
+		t.Fatalf("NewFreeList added %d Go-heap bytes for a %d-byte generation table", delta, generationTableSize)
+	}
+
+	if err := fl.Free(); err != nil {
+		t.Fatalf("Free: %v", err)
+	}
+	if fl.slotGenBase != 0 || fl.slotGenSize != 0 || fl.slotGenLen != 0 {
+		t.Fatal("Free did not release the mmap-backed generation table")
 	}
 }
