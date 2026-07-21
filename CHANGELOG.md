@@ -1,5 +1,16 @@
 # Changelog
 
+## [v1.2.4] — 2026-07-20
+
+### Fixed
+
+- **Arena typed allocation reset semantics.** `ArenaAlloc` and `ArenaSlice`
+  now clear their returned allocation on every call, including after the
+  allocator's O(1) `Reset()` rewind. This prevents stale occupancy/frequency
+  bytes from being interpreted as live hash-table state. For dense scratch
+  buffers that overwrite every byte, `ArenaAllocUninitialized` and
+  `ArenaSliceUninitialized` retain the original raw, no-clear path.
+
 ## [v1.2.3] — 2026-07-20
 
 ### Added

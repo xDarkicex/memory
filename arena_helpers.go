@@ -17,7 +17,10 @@ package memory
 
 import "unsafe"
 
-// ArenaAlloc allocates a zeroed T from the arena and returns *T.
+// ArenaAlloc allocates a zeroed T from the arena and returns *T. It clears the
+// allocation even after Arena.Reset, whose deliberately O(1) rewind leaves
+// old bytes in place. Use ArenaAllocUninitialized only when every field will
+// be overwritten before its first read.
 // The pointer is invalid after Arena.Reset or Arena.Free.
 //
 // Example:
@@ -27,6 +30,19 @@ import "unsafe"
 //	copy(cat.Name[:], "Whiskers")
 //	cat.Age = 3
 func ArenaAlloc[T any](arena *Arena) (*T, error) {
+	p, err := ArenaAllocUninitialized[T](arena)
+	if err != nil {
+		return nil, err
+	}
+	var zero T
+	*p = zero
+	return p, nil
+}
+
+// ArenaAllocUninitialized allocates a T without clearing it. This is the raw,
+// highest-throughput form for callers that fully initialize the allocation.
+// Bytes may contain data from an earlier Arena.Reset generation.
+func ArenaAllocUninitialized[T any](arena *Arena) (*T, error) {
 	var typed *T
 	ptr, err := arena.Alloc(uint64(unsafe.Sizeof(*typed)))
 	if err != nil {
@@ -45,8 +61,19 @@ func MustArenaAlloc[T any](arena *Arena) *T {
 	return p
 }
 
-// ArenaSlice allocates a backing array of cap T from the arena and returns a
-// slice with len=0, cap=cap. append works normally until capacity is
+// MustArenaAllocUninitialized is the panic-on-exhaustion form of
+// ArenaAllocUninitialized.
+func MustArenaAllocUninitialized[T any](arena *Arena) *T {
+	p, err := ArenaAllocUninitialized[T](arena)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+// ArenaSlice allocates a zeroed backing array of cap T from the arena and
+// returns a slice with len=0, cap=cap. It clears the allocation on every call,
+// including after Arena.Reset. append works normally until capacity is
 // exhausted, at which point Go falls back to the heap. Use [ArenaAppend] for
 // arena-guaranteed append that panics on overflow.
 //
@@ -55,22 +82,45 @@ func MustArenaAlloc[T any](arena *Arena) *T {
 //	toys, err := ArenaSlice[Toy](arena, 16)
 //	if err != nil { ... }
 //	toys = append(toys, Toy{Name: "bone"}) // stays in arena (cap=16)
-func ArenaSlice[T any](arena *Arena, cap int) ([]T, error) {
-	if cap == 0 {
+func ArenaSlice[T any](arena *Arena, capacity int) ([]T, error) {
+	values, err := ArenaSliceUninitialized[T](arena, capacity)
+	if err != nil {
+		return nil, err
+	}
+	clear(values[:cap(values)])
+	return values, nil
+}
+
+// ArenaSliceUninitialized allocates a backing array without clearing it. The
+// returned slice has len=0 and cap=cap. It is intended for dense buffers that
+// are completely overwritten before read; after Arena.Reset, its backing
+// bytes retain prior contents.
+func ArenaSliceUninitialized[T any](arena *Arena, capacity int) ([]T, error) {
+	if capacity == 0 {
 		return nil, nil
 	}
 	var typed *T
-	sz := unsafe.Sizeof(*typed) * uintptr(cap)
+	sz := unsafe.Sizeof(*typed) * uintptr(capacity)
 	ptr, err := arena.Alloc(uint64(sz))
 	if err != nil {
 		return nil, err
 	}
-	return unsafe.Slice((*T)(ptr), cap)[:0], nil
+	return unsafe.Slice((*T)(ptr), capacity)[:0], nil
 }
 
 // MustArenaSlice is ArenaSlice but panics on error.
-func MustArenaSlice[T any](arena *Arena, cap int) []T {
-	s, err := ArenaSlice[T](arena, cap)
+func MustArenaSlice[T any](arena *Arena, capacity int) []T {
+	s, err := ArenaSlice[T](arena, capacity)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+// MustArenaSliceUninitialized is the panic-on-exhaustion form of
+// ArenaSliceUninitialized.
+func MustArenaSliceUninitialized[T any](arena *Arena, capacity int) []T {
+	s, err := ArenaSliceUninitialized[T](arena, capacity)
 	if err != nil {
 		panic(err)
 	}

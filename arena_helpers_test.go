@@ -11,7 +11,7 @@ type Cat struct {
 }
 
 func TestArenaAlloc_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestArenaAlloc_Basic(t *testing.T) {
 }
 
 func TestArenaAlloc_Error(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestArenaAlloc_Error(t *testing.T) {
 }
 
 func TestArenaAlloc_MultipleDistinct(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,27 @@ func TestArenaAlloc_MultipleDistinct(t *testing.T) {
 	}
 }
 
+func TestArenaAllocZeroesAfterReset(t *testing.T) {
+	arena, err := NewArena(64<<10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arena.Free()
+
+	raw := MustArenaAllocUninitialized[uint64](arena)
+	*raw = 0xdecafbad
+	arena.Reset()
+	if got := *MustArenaAllocUninitialized[uint64](arena); got != 0xdecafbad {
+		t.Fatalf("uninitialized allocation after reset = %#x, want retained bytes", got)
+	}
+	arena.Reset()
+	if got := *MustArenaAlloc[uint64](arena); got != 0 {
+		t.Fatalf("zeroed allocation after reset = %#x, want 0", got)
+	}
+}
+
 func TestArenaSlice_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +104,7 @@ func TestArenaSlice_Basic(t *testing.T) {
 }
 
 func TestArenaSlice_ZeroCap(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +119,27 @@ func TestArenaSlice_ZeroCap(t *testing.T) {
 	}
 }
 
+func TestArenaSliceZeroesAfterReset(t *testing.T) {
+	arena, err := NewArena(64<<10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arena.Free()
+
+	values := MustArenaSliceUninitialized[uint64](arena, 4)[:4]
+	values[0] = 0xdecafbad
+	arena.Reset()
+	if got := MustArenaSliceUninitialized[uint64](arena, 4)[:4][0]; got != 0xdecafbad {
+		t.Fatalf("uninitialized slice after reset = %#x, want retained bytes", got)
+	}
+	arena.Reset()
+	if got := MustArenaSlice[uint64](arena, 4)[:4][0]; got != 0 {
+		t.Fatalf("zeroed slice after reset = %#x, want 0", got)
+	}
+}
+
 func TestArenaNewString_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +152,7 @@ func TestArenaNewString_Basic(t *testing.T) {
 }
 
 func TestArenaNewString_Empty(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +168,7 @@ func TestArenaNewString_Empty(t *testing.T) {
 }
 
 func TestArenaNewString_InStruct(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +192,7 @@ func TestArenaNewString_InStruct(t *testing.T) {
 }
 
 func TestArenaAppend_Basic(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +209,7 @@ func TestArenaAppend_Basic(t *testing.T) {
 }
 
 func TestArenaAppend_PanicsOnOverflow(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +231,7 @@ func TestArenaAppend_PanicsOnOverflow(t *testing.T) {
 }
 
 func TestArenaAppend_ZeroElems(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +246,7 @@ func TestArenaAppend_ZeroElems(t *testing.T) {
 }
 
 func TestMustArenaAlloc_AfterFree_Panics(t *testing.T) {
-	arena, err := NewArena(64 << 10, 64)
+	arena, err := NewArena(64<<10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +264,7 @@ func TestMustArenaAlloc_AfterFree_Panics(t *testing.T) {
 }
 
 func TestArenaAlloc_LargeType(t *testing.T) {
-	arena, err := NewArena(1 << 20, 64)
+	arena, err := NewArena(1<<20, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
