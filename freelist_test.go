@@ -101,6 +101,31 @@ func TestFreeListExhaustion(t *testing.T) {
 	}
 }
 
+func TestFreeListPublishesNewSlabWithOneCAS(t *testing.T) {
+	cfg := FreeListConfig{
+		PoolSize:  4 * 64,
+		SlotSize:  64,
+		SlabSize:  4 * 64,
+		SlabCount: 1,
+		Prealloc:  false,
+	}
+	fl, err := NewFreeList(cfg, 64)
+	if err != nil {
+		t.Fatalf("NewFreeList: %v", err)
+	}
+	defer fl.Free()
+
+	if _, err := fl.Allocate(); err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	// One CAS publishes the four-slot chain and one CAS pops its first slot.
+	// The tag is the publication/pop sequence counter, so this catches a
+	// regression back to one CAS per slot during cold-slab construction.
+	if got := unpackTag(fl.head.Load()); got != 2 {
+		t.Fatalf("freelist head tag = %d, want 2 after one slab publish and one pop", got)
+	}
+}
+
 func TestFreeListDoubleFree(t *testing.T) {
 	cfg := DefaultFreeListConfig()
 	cfg.PoolSize = 64 * 1024

@@ -327,14 +327,35 @@ func (fl *FreeList) growSlab() error {
 	}
 
 	fl.slabLen.Store(int32(idx + 1))
-	fl.slabMu.Unlock()
 
-	// Publish all slots onto the free list outside the lock.
-	// Reverse order so the first allocation gets the lowest-address slot.
-	for i := slots - 1; i >= 0; i-- {
-		ptr := unsafe.Add(unsafe.Pointer(&data[0]), uintptr(i)*uintptr(slotSize))
-		fl.pushFree(ptr, int32(idx))
+	// Link the whole slab with plain stores, then publish its head with one CAS.
+	// The release CAS makes every link and owner metadata store visible before a
+	// concurrent pop can observe the new head. Keeping slabMu held prevents
+	// Reset/Free from unmapping the new slab between registration and publish.
+	// The old path called pushFree once per slot, turning one cold slab into
+	// O(slots) contended CAS operations.
+	basePtr := unsafe.Pointer(&data[0])
+	for i := 0; i < slots; i++ {
+		ptr := unsafe.Add(basePtr, uintptr(i)*uintptr(slotSize))
+		var next unsafe.Pointer
+		if i+1 < slots {
+			next = unsafe.Add(basePtr, uintptr(i+1)*uintptr(slotSize))
+		}
+		atomic.StoreUint64((*uint64)(ptr), uint64(uintptr(next)))
+		*(*uint32)(unsafe.Add(ptr, 24)) = packSlotMeta(int32(idx), 0)
 	}
+
+	head := basePtr // lowest-address slot is returned first.
+	tail := unsafe.Add(basePtr, uintptr(slots-1)*uintptr(slotSize))
+	for {
+		old := fl.head.Load()
+		atomic.StoreUint64((*uint64)(tail), uint64(uintptr(unpackPtr(old))))
+		if fl.head.CompareAndSwap(old, packTaggedPtr(head, unpackTag(old)+1)) {
+			break
+		}
+		fl.casRetries.Add(1)
+	}
+	fl.slabMu.Unlock()
 	return nil
 }
 
