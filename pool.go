@@ -154,6 +154,12 @@ func (p *Pool) mmapSlabBase(slabSize uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.cfg.LockMemory {
+		mlockBestEffort(data)
+	}
+	if p.cfg.MadviseRandom {
+		madviseRandomBestEffort(data)
+	}
 	return data, nil
 }
 

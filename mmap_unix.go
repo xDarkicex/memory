@@ -56,6 +56,24 @@ func MmapFile(fd int, offset int64, size int, writable bool) ([]byte, error) {
 	return data[diff:], nil
 }
 
+// mlockBestEffort locks the pages backing data into physical RAM.
+// Failure is silent — the kernel may still swap under extreme pressure.
+func mlockBestEffort(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	_ = unix.Mlock(data)
+}
+
+// madviseRandomBestEffort advises the kernel that page access will be
+// random, disabling read-ahead. Failure is silent.
+func madviseRandomBestEffort(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	_ = unix.Madvise(data, unix.MADV_RANDOM)
+}
+
 func Munmap(data []byte) error {
 	if len(data) == 0 && cap(data) == 0 {
 		return nil

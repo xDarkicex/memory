@@ -48,6 +48,18 @@ type AllocatorConfig struct {
 	SlabCount int
 	// SlabSize is the size of each slab (default 1MB, should be >= HugepageSize for hugepages).
 	SlabSize uint64
+	// LockMemory calls mlock(2) on each slab after mmap, pinning pages in
+	// physical RAM and preventing the kernel from swapping them out. This
+	// keeps latency-critical index pages resident at the cost of reducing
+	// reclaimable memory for the rest of the system. Requires CAP_IPC_LOCK
+	// or an increased RLIMIT_MEMLOCK on Linux; ignored on failure.
+	LockMemory bool
+	// MadviseRandom applies MADV_RANDOM to each slab after mmap. This tells
+	// the kernel that page references will be in unpredictable order,
+	// disabling read-ahead and reducing wasted RAM from speculative
+	// prefetching. Ideal for HNSW graph traversal and inverted index random
+	// access patterns.
+	MadviseRandom bool
 }
 
 // DefaultConfig returns the default allocator configuration.

@@ -86,6 +86,14 @@ func MmapFile(fd int, offset int64, size int, writable bool) ([]byte, error) {
 	return data[diff:], nil
 }
 
+// mlockBestEffort is a no-op on Windows — VirtualAlloc with MEM_COMMIT
+// already pins pages in the working set.
+func mlockBestEffort(data []byte) {}
+
+// madviseRandomBestEffort is a no-op on Windows — the kernel does not
+// support madvise-style page access hints.
+func madviseRandomBestEffort(data []byte) {}
+
 func Munmap(data []byte) error {
 	if len(data) == 0 && cap(data) == 0 {
 		return nil
